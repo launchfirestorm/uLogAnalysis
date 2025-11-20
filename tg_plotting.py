@@ -245,11 +245,17 @@ def plot_3d_terminal_engagement(trajectory_data: list, out_dir: Path,
         print(f"Saved 3D trajectory plot: {plot_path}")
 
 
-def plot_roll_pitch(data: Dict[str, np.ndarray], mask: np.ndarray, out_dir: Path, 
-                   interactive: bool = False, engagement_masks: Dict = None):
-    """Create roll and pitch timeseries plots with setpoints during terminal engagement only.
+def plot_roll_pitch(trajectory_data: list, out_dir: Path, 
+                   interactive: bool = False, target_selection: str = "Van"):
+    """Create roll and pitch timeseries plots with setpoints during terminal engagement for all trajectories.
     
-    This plot shows only the masked terminal engagement portion (dive to impact).
+    Creates subplots showing roll and pitch for each trajectory with offboard mode regions marked.
+    
+    Args:
+        trajectory_data: List of dicts containing trajectory info
+        out_dir: Output directory
+        interactive: Whether to show interactive plot
+        target_selection: Target name for filename
     """
     if not matplotlib_available:
         print("matplotlib not available, skipping roll/pitch timeseries plot.")
@@ -261,69 +267,115 @@ def plot_roll_pitch(data: Dict[str, np.ndarray], mask: np.ndarray, out_dir: Path
         print("matplotlib not available, skipping roll/pitch timeseries plot.")
         return
     
-    # Check if mask has any data
-    if not np.any(mask):
+    # Ensure trajectory_data is a list
+    if not isinstance(trajectory_data, list):
+        trajectory_data = [trajectory_data]
+    
+    # Filter to only trajectories with terminal engagement
+    valid_trajectories = [t for t in trajectory_data if np.any(t['mask'])]
+    
+    if len(valid_trajectories) == 0:
         print("No terminal engagement data to plot for roll/pitch timeseries.")
         return
     
-    # Get indices within the mask for marking dive and impact
-    mask_indices = np.where(mask)[0]
-    first_dive_idx = engagement_masks.get('first_dive_idx') if engagement_masks else mask_indices[0]
-    first_impact_idx = engagement_masks.get('first_impact_idx') if engagement_masks else mask_indices[-1]
+    n_trajectories = len(valid_trajectories)
     
-    # Find positions within masked data
-    dive_pos_in_mask = np.where(mask_indices == first_dive_idx)[0]
-    impact_pos_in_mask = np.where(mask_indices == first_impact_idx)[0]
+    # Create subplots - 2 columns (roll, pitch) per trajectory
+    fig, axes = plt.subplots(n_trajectories, 2, figsize=(16, 4 * n_trajectories), sharex='col')
+    if n_trajectories == 1:
+        axes = axes.reshape(1, -1)
     
-    # Create time array relative to start of engagement
-    time_engagement = (data["timestamp_us"][mask] - data["timestamp_us"][mask][0]) * 1e-6
-    
-    fig, axes = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
-    
-    # Roll
-    axes[0].plot(time_engagement, data["roll_deg"][mask], 'b-', linewidth=2, label='Roll')
-    if 'roll_sp_deg' in data and np.any(data["roll_sp_deg"][mask] != 0):
-        axes[0].plot(time_engagement, data["roll_sp_deg"][mask], 'b--', linewidth=1.5, alpha=0.7, label='Roll Setpoint')
-    
-    # Mark dive and impact on roll plot
-    if len(dive_pos_in_mask) > 0:
-        dive_idx = dive_pos_in_mask[0]
-        axes[0].axvline(x=time_engagement[dive_idx], color='orange', linestyle=':', alpha=0.7, linewidth=2)
-        axes[0].scatter(time_engagement[dive_idx], data["roll_deg"][mask][dive_idx], 
-                       color='orange', s=100, marker='^', edgecolors='black', linewidth=1.5, zorder=5)
-    if len(impact_pos_in_mask) > 0:
-        impact_idx = impact_pos_in_mask[0]
-        axes[0].axvline(x=time_engagement[impact_idx], color='red', linestyle=':', alpha=0.7, linewidth=2)
-        axes[0].scatter(time_engagement[impact_idx], data["roll_deg"][mask][impact_idx], 
-                       color='red', s=120, marker='X', edgecolors='black', linewidth=1.5, zorder=5)
-    
-    axes[0].set_ylabel('Roll [deg]')
-    axes[0].set_title('Roll and Pitch During Terminal Engagement')
-    axes[0].grid(True, alpha=0.3)
-    axes[0].legend()
-    
-    # Pitch
-    axes[1].plot(time_engagement, data["pitch_deg"][mask], 'g-', linewidth=2, label='Pitch')
-    if 'pitch_sp_deg' in data and np.any(data["pitch_sp_deg"][mask] != 0):
-        axes[1].plot(time_engagement, data["pitch_sp_deg"][mask], 'g--', linewidth=1.5, alpha=0.7, label='Pitch Setpoint')
-    
-    # Mark dive and impact on pitch plot
-    if len(dive_pos_in_mask) > 0:
-        dive_idx = dive_pos_in_mask[0]
-        axes[1].axvline(x=time_engagement[dive_idx], color='orange', linestyle=':', alpha=0.7, linewidth=2, label='Dive Start')
-        axes[1].scatter(time_engagement[dive_idx], data["pitch_deg"][mask][dive_idx], 
-                       color='orange', s=100, marker='^', edgecolors='black', linewidth=1.5, zorder=5)
-    if len(impact_pos_in_mask) > 0:
-        impact_idx = impact_pos_in_mask[0]
-        axes[1].axvline(x=time_engagement[impact_idx], color='red', linestyle=':', alpha=0.7, linewidth=2, label='Impact')
-        axes[1].scatter(time_engagement[impact_idx], data["pitch_deg"][mask][impact_idx], 
-                       color='red', s=120, marker='X', edgecolors='black', linewidth=1.5, zorder=5)
-    
-    axes[1].set_ylabel('Pitch [deg]')
-    axes[1].set_xlabel('Time [s]')
-    axes[1].grid(True, alpha=0.3)
-    axes[1].axhline(y=-4.0, color='purple', linestyle='--', alpha=0.5, linewidth=1.5, label='Dive threshold')
-    axes[1].legend()
+    for idx, traj_info in enumerate(valid_trajectories):
+        data = traj_info['data']
+        mask = traj_info['mask']
+        engagement_masks = traj_info['engagement_masks']
+        filename = traj_info.get('filename', f'trajectory_{idx+1}')
+        
+        # Get indices within the mask for marking dive and impact
+        mask_indices = np.where(mask)[0]
+        first_dive_idx = engagement_masks.get('first_dive_idx', mask_indices[0])
+        first_impact_idx = engagement_masks.get('first_impact_idx', mask_indices[-1])
+        
+        # Find positions within masked data
+        dive_pos_in_mask = np.where(mask_indices == first_dive_idx)[0]
+        impact_pos_in_mask = np.where(mask_indices == first_impact_idx)[0]
+        
+        # Create time array relative to start of engagement
+        time_engagement = (data["timestamp_us"][mask] - data["timestamp_us"][mask][0]) * 1e-6
+        
+        # Roll subplot
+        ax_roll = axes[idx, 0]
+        ax_roll.plot(time_engagement, data["roll_deg"][mask], 'b-', linewidth=2, label='Roll')
+        if 'roll_sp_deg' in data and np.any(data["roll_sp_deg"][mask] != 0):
+            ax_roll.plot(time_engagement, data["roll_sp_deg"][mask], 'b--', linewidth=1.5, alpha=0.7, label='Roll Setpoint')
+        
+        # Mark offboard mode regions on roll plot
+        if 'offboard_mode' in data and np.any(data['offboard_mode'][mask]):
+            offboard_in_mask = data['offboard_mode'][mask]
+            # Find continuous offboard regions
+            offboard_transitions = np.diff(offboard_in_mask.astype(int), prepend=0, append=0)
+            offboard_starts = np.where(offboard_transitions == 1)[0]
+            offboard_ends = np.where(offboard_transitions == -1)[0]
+            
+            for start_idx, end_idx in zip(offboard_starts, offboard_ends):
+                ax_roll.axvspan(time_engagement[start_idx], time_engagement[end_idx-1], 
+                               alpha=0.2, color='cyan', label='Offboard Mode' if start_idx == offboard_starts[0] else '')
+        
+        # Mark dive and impact on roll plot
+        if len(dive_pos_in_mask) > 0:
+            dive_idx = dive_pos_in_mask[0]
+            ax_roll.axvline(x=time_engagement[dive_idx], color='orange', linestyle=':', alpha=0.7, linewidth=2)
+            ax_roll.scatter(time_engagement[dive_idx], data["roll_deg"][mask][dive_idx], 
+                           color='orange', s=100, marker='^', edgecolors='black', linewidth=1.5, zorder=5)
+        if len(impact_pos_in_mask) > 0:
+            impact_idx = impact_pos_in_mask[0]
+            ax_roll.axvline(x=time_engagement[impact_idx], color='red', linestyle=':', alpha=0.7, linewidth=2)
+            ax_roll.scatter(time_engagement[impact_idx], data["roll_deg"][mask][impact_idx], 
+                           color='red', s=120, marker='X', edgecolors='black', linewidth=1.5, zorder=5)
+        
+        ax_roll.set_ylabel('Roll [deg]')
+        ax_roll.set_title(f'{filename} - Roll', fontsize=10)
+        ax_roll.grid(True, alpha=0.3)
+        ax_roll.legend(loc='best', fontsize=8)
+        if idx == n_trajectories - 1:
+            ax_roll.set_xlabel('Time [s]')
+        
+        # Pitch subplot
+        ax_pitch = axes[idx, 1]
+        ax_pitch.plot(time_engagement, data["pitch_deg"][mask], 'g-', linewidth=2, label='Pitch')
+        if 'pitch_sp_deg' in data and np.any(data["pitch_sp_deg"][mask] != 0):
+            ax_pitch.plot(time_engagement, data["pitch_sp_deg"][mask], 'g--', linewidth=1.5, alpha=0.7, label='Pitch Setpoint')
+        
+        # Mark offboard mode regions on pitch plot
+        if 'offboard_mode' in data and np.any(data['offboard_mode'][mask]):
+            offboard_in_mask = data['offboard_mode'][mask]
+            offboard_transitions = np.diff(offboard_in_mask.astype(int), prepend=0, append=0)
+            offboard_starts = np.where(offboard_transitions == 1)[0]
+            offboard_ends = np.where(offboard_transitions == -1)[0]
+            
+            for start_idx, end_idx in zip(offboard_starts, offboard_ends):
+                ax_pitch.axvspan(time_engagement[start_idx], time_engagement[end_idx-1], 
+                                alpha=0.2, color='cyan', label='Offboard Mode' if start_idx == offboard_starts[0] else '')
+        
+        # Mark dive and impact on pitch plot
+        if len(dive_pos_in_mask) > 0:
+            dive_idx = dive_pos_in_mask[0]
+            ax_pitch.axvline(x=time_engagement[dive_idx], color='orange', linestyle=':', alpha=0.7, linewidth=2, label='Dive Start')
+            ax_pitch.scatter(time_engagement[dive_idx], data["pitch_deg"][mask][dive_idx], 
+                            color='orange', s=100, marker='^', edgecolors='black', linewidth=1.5, zorder=5)
+        if len(impact_pos_in_mask) > 0:
+            impact_idx = impact_pos_in_mask[0]
+            ax_pitch.axvline(x=time_engagement[impact_idx], color='red', linestyle=':', alpha=0.7, linewidth=2, label='Impact')
+            ax_pitch.scatter(time_engagement[impact_idx], data["pitch_deg"][mask][impact_idx], 
+                            color='red', s=120, marker='X', edgecolors='black', linewidth=1.5, zorder=5)
+        
+        ax_pitch.set_ylabel('Pitch [deg]')
+        ax_pitch.set_title(f'{filename} - Pitch', fontsize=10)
+        ax_pitch.grid(True, alpha=0.3)
+        ax_pitch.axhline(y=-4.0, color='purple', linestyle='--', alpha=0.5, linewidth=1.5, label='Dive threshold')
+        ax_pitch.legend(loc='best', fontsize=8)
+        if idx == n_trajectories - 1:
+            ax_pitch.set_xlabel('Time [s]')
     
     plt.tight_layout()
     
@@ -331,7 +383,9 @@ def plot_roll_pitch(data: Dict[str, np.ndarray], mask: np.ndarray, out_dir: Path
         plt.show()
         print("Showing interactive roll/pitch timeseries plot (close window to continue)")
     else:
-        plot_path = out_dir / "roll_pitch_timeseries.png"
+        target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
+        prefix = "combined_roll_pitch" if n_trajectories > 1 else "roll_pitch_timeseries"
+        plot_path = out_dir / f"{prefix}{target_suffix}.png"
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"Saved roll/pitch timeseries plot: {plot_path}")

@@ -774,6 +774,9 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     
     # Create accelerometer impact plot to validate impact detection
     plot_accelerometer_impacts(trajectory_data, output_dir, target_selection, interactive_3d)
+    
+    # Create roll/pitch timeseries plot for all trajectories with offboard mode
+    plot_roll_pitch(trajectory_data, output_dir, interactive_3d, target_selection)
 
 
 def main():
@@ -831,24 +834,17 @@ def main():
     mask = engagement_masks['terminal_engagement_mask']
 
     # Generate plots and analysis
-    trajectory_data_3d = [{
+    trajectory_data = [{
         'ulog': ulog,
         'data': data,
         'mask': mask,
         'engagement_masks': engagement_masks,
         'filename': args.ulog.name
     }]
-    plot_3d_terminal_engagement(trajectory_data_3d, args.output, args.target, args.interactive_3d)
-    plot_roll_pitch(data, mask, args.output, args.interactive_3d, engagement_masks)
+    plot_3d_terminal_engagement(trajectory_data, args.output, args.target, args.interactive_3d)
+    plot_roll_pitch(trajectory_data, args.output, args.interactive_3d, args.target)
     
     # Create GPS trajectory plot for single file (shows entire trajectory)
-    trajectory_data = [{
-        'filename': args.ulog.name,
-        'ulog': ulog,
-        'data': data,
-        'mask': mask,
-        'engagement_masks': engagement_masks
-    }]
     gps_trajectory_plot(trajectory_data, args.output, args.target, args.interactive_3d)
     
     # Create accelerometer impact plot to validate impact detection
