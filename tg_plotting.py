@@ -647,16 +647,14 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
             mask = traj_info['mask']
             engagement_masks = traj_info['engagement_masks']
             
-            # Only plot data from dive point onward
-            if not np.any(mask):
-                print(f"  Skipping {filename}: No terminal engagement")
-                continue
-            
-            # Get first dive index
+            # Get first dive index - use it if available, otherwise plot from start
             first_dive_idx = engagement_masks.get('first_dive_idx')
             if first_dive_idx is None:
-                print(f"  Skipping {filename}: No dive point detected")
-                continue
+                # No dive detected, check if there's any data to plot
+                if len(data['timestamp_us']) == 0:
+                    print(f"  Skipping {filename}: No data available")
+                    continue
+                first_dive_idx = 0  # Start from beginning if no dive detected
             
             # Filter data from dive point onward
             dive_mask = np.zeros(len(data['timestamp_us']), dtype=bool)
@@ -669,20 +667,28 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
             ax = axes[plot_idx]
             ax.plot(time_s, data['accel_magnitude'][dive_mask], 'b-', linewidth=1, alpha=0.7, label='Accel Magnitude')
             
-            # Mark detected impacts (only those after dive point)
-            impact_indices = engagement_masks.get('impact_indices', [])
-            valid_impacts = [idx for idx in impact_indices if idx >= first_dive_idx]
+            # Mark first impact from Method 1 (high acceleration magnitude)
+            method1_impacts = data.get('method1_impact_indices', [])
+            method2_impacts = data.get('method2_impact_indices', [])
+            valid_method1 = [idx for idx in method1_impacts if idx >= first_dive_idx]
+            valid_method2 = [idx for idx in method2_impacts if idx >= first_dive_idx]
             
-            if len(valid_impacts) > 0:
-                # Convert to time relative to dive start
-                impact_times = (data['timestamp_us'][valid_impacts] - data['timestamp_us'][first_dive_idx]) * 1e-6
-                impact_accels = data['accel_magnitude'][valid_impacts]
-                ax.scatter(impact_times, impact_accels, color='red', s=100, marker='X',
-                          edgecolors='black', linewidth=2, zorder=5, label='Detected Impact')
-                
-                # Add vertical lines at impacts
-                for impact_time in impact_times:
-                    ax.axvline(x=impact_time, color='red', linestyle='--', alpha=0.5, linewidth=1)
+            if len(valid_method1) > 0:
+                first_method1_idx = valid_method1[0]
+                impact_time = (data['timestamp_us'][first_method1_idx] - data['timestamp_us'][first_dive_idx]) * 1e-6
+                impact_accel = data['accel_magnitude'][first_method1_idx]
+                ax.scatter(impact_time, impact_accel, color='red', s=100, marker='X',
+                          edgecolors='black', linewidth=2, zorder=5, label='Method 1 Impact')
+                ax.axvline(x=impact_time, color='red', linestyle='--', alpha=0.5, linewidth=1)
+            
+            # Mark first impact from Method 2 (high acceleration derivative)
+            if len(valid_method2) > 0:
+                first_method2_idx = valid_method2[0]
+                impact_time = (data['timestamp_us'][first_method2_idx] - data['timestamp_us'][first_dive_idx]) * 1e-6
+                impact_accel = data['accel_magnitude'][first_method2_idx]
+                ax.scatter(impact_time, impact_accel, color='orange', s=100, marker='o',
+                          edgecolors='black', linewidth=2, zorder=5, label='Method 2 Impact')
+                ax.axvline(x=impact_time, color='orange', linestyle=':', alpha=0.5, linewidth=1)
             
             # Mark acceleration threshold
             ax.axhline(y=15.0, color='orange', linestyle=':', alpha=0.5, linewidth=1.5, 
@@ -708,7 +714,8 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
             lines2, labels2 = ax2.get_legend_handles_labels()
             ax.legend(lines1 + lines2, labels1 + labels2, loc='upper right', fontsize=8)
             
-            print(f"  Processed {filename}: {len(valid_impacts)} impact(s) detected (from dive point)")
+            impact_count = len(valid_method1) + len(valid_method2)
+            print(f"  Processed {filename}: {impact_count} impact(s) detected (M1: {len(valid_method1)}, M2: {len(valid_method2)})")
             
             plot_idx += 1  # Increment only on successful plot
             
@@ -758,14 +765,13 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
             mask = traj_info['mask']
             engagement_masks = traj_info['engagement_masks']
             
-            # Only plot data from dive point onward
-            if not np.any(mask):
-                continue
-            
-            # Get first dive index
+            # Get first dive index - use it if available, otherwise plot from start
             first_dive_idx = engagement_masks.get('first_dive_idx')
             if first_dive_idx is None:
-                continue
+                # No dive detected, check if there's any data to plot
+                if len(data['timestamp_us']) == 0:
+                    continue
+                first_dive_idx = 0  # Start from beginning if no dive detected
             
             # Filter data from dive point onward
             dive_mask = np.zeros(len(data['timestamp_us']), dtype=bool)
@@ -780,24 +786,33 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
                 ax.plot(time_s, data['accel_derivative_smooth'][dive_mask], 'c-', linewidth=1.5, alpha=0.7, 
                        label='|Accel Deriv| (10-sample avg)')
             
-            # Mark Method 1 impacts only (high acceleration magnitude at low altitude)
-            method1_impact_indices = data.get('method1_impact_indices', [])
-            valid_method1_impacts = [idx for idx in method1_impact_indices if idx >= first_dive_idx]
+            # Get impact indices for both methods
+            method1_impacts = data.get('method1_impact_indices', [])
+            method2_impacts = data.get('method2_impact_indices', [])
+            valid_method1 = [idx for idx in method1_impacts if idx >= first_dive_idx]
+            valid_method2 = [idx for idx in method2_impacts if idx >= first_dive_idx]
             
-            if len(valid_method1_impacts) > 0 and 'accel_derivative_smooth' in data:
-                # Convert to time relative to dive start
-                impact_times = (data['timestamp_us'][valid_method1_impacts] - data['timestamp_us'][first_dive_idx]) * 1e-6
-                impact_derivs = data['accel_derivative_smooth'][valid_method1_impacts]
-                ax.scatter(impact_times, impact_derivs, color='red', s=100, marker='X',
+            # Mark first impact from Method 1 (high acceleration magnitude)
+            if len(valid_method1) > 0 and 'accel_derivative_smooth' in data:
+                first_method1_idx = valid_method1[0]
+                impact_time = (data['timestamp_us'][first_method1_idx] - data['timestamp_us'][first_dive_idx]) * 1e-6
+                impact_deriv = data['accel_derivative_smooth'][first_method1_idx]
+                ax.scatter(impact_time, impact_deriv, color='red', s=100, marker='X',
                           edgecolors='black', linewidth=2, zorder=5, label='Method 1 Impact')
-                
-                # # Add vertical lines at impacts
-                # for impact_time in impact_times:
-                #     ax.axvline(x=impact_time, color='red', linestyle='--', alpha=0.5, linewidth=1)
+                ax.axvline(x=impact_time, color='red', linestyle='--', alpha=0.5, linewidth=1)
+            
+            # Mark first impact from Method 2 (high acceleration derivative)
+            if len(valid_method2) > 0 and 'accel_derivative_smooth' in data:
+                first_method2_idx = valid_method2[0]
+                impact_time = (data['timestamp_us'][first_method2_idx] - data['timestamp_us'][first_dive_idx]) * 1e-6
+                impact_deriv = data['accel_derivative_smooth'][first_method2_idx]
+                ax.scatter(impact_time, impact_deriv, color='orange', s=100, marker='o',
+                          edgecolors='black', linewidth=2, zorder=5, label='Method 2 Impact')
+                ax.axvline(x=impact_time, color='orange', linestyle=':', alpha=0.5, linewidth=1)
             
             # Mark derivative threshold (only positive since we're using magnitude)
-            ax.axhline(y=15.0, color='orange', linestyle=':', alpha=0.5, linewidth=1.5, 
-                      label='Deriv Threshold (15 m/s²)')
+            ax.axhline(y=2.0, color='orange', linestyle=':', alpha=0.5, linewidth=1.5, 
+                      label='Deriv Threshold (2.0 m/s²)')
             
             # Configure primary axis
             ax.set_xlabel('Time [s]')

@@ -272,13 +272,14 @@ def extract_position_attitude(ulog) -> Dict[str, np.ndarray]:
     }
 
 
-def detect_ground_impact(data: Dict[str, np.ndarray], accel_threshold: float = 15.0, alt_threshold: float = 10.0) -> np.ndarray:
+def detect_ground_impact(data: Dict[str, np.ndarray], accel_threshold: float = 15.0, deriv_threshold: float = 2.0, alt_threshold: float = 10.0) -> np.ndarray:
     """
     Detect ground impact using accelerometer magnitude and derivative with altitude data.
     
     Args:
         data: Data dictionary containing accelerometer and altitude data
-        accel_threshold: Acceleration magnitude/change threshold for impact (m/s²)
+        accel_threshold: Acceleration magnitude threshold for impact (m/s²)
+        deriv_threshold: Acceleration derivative magnitude threshold for impact (m/s²)
         alt_threshold: Altitude threshold - only consider impacts below this height (m)
     
     Returns:
@@ -297,7 +298,7 @@ def detect_ground_impact(data: Dict[str, np.ndarray], accel_threshold: float = 1
     accel_deriv = np.diff(data['accel_magnitude'], prepend=data['accel_magnitude'][0])
     
     # Calculate smoothed acceleration derivative (10-sample moving average)
-    window_size = 10
+    window_size = 5
     if len(accel_deriv) >= window_size:
         accel_deriv_smooth = np.convolve(accel_deriv, np.ones(window_size)/window_size, mode='same')
     else:
@@ -311,12 +312,14 @@ def detect_ground_impact(data: Dict[str, np.ndarray], accel_threshold: float = 1
     data['accel_derivative_smooth'] = accel_deriv_smooth_mag  # Store magnitude
     
     # Large change in smoothed derivative magnitude
-    large_deriv_change = accel_deriv_smooth_mag > accel_threshold
+    large_deriv_change = accel_deriv_smooth_mag > deriv_threshold
     method2_candidates = large_deriv_change & low_altitude
     
-    # Store method 1 impact indices separately for plotting
+    # Store method 1 and method 2 impact indices separately for plotting
     method1_impact_indices = np.where(method1_candidates)[0]
+    method2_impact_indices = np.where(method2_candidates)[0]
     data['method1_impact_indices'] = method1_impact_indices
+    data['method2_impact_indices'] = method2_impact_indices
     
     # Combine both methods
     impact_candidates = method1_candidates | method2_candidates
@@ -350,7 +353,7 @@ def detect_ground_impact(data: Dict[str, np.ndarray], accel_threshold: float = 1
 
 
 def compute_engagement_masks(data: Dict[str, np.ndarray], pitch_threshold: float = -4.0,
-                           accel_threshold: float = 15.0, alt_threshold: float = 5.0) -> Dict[str, np.ndarray]:
+                           accel_threshold: float = 15.0, deriv_threshold: float = 2.0, alt_threshold: float = 5.0) -> Dict[str, np.ndarray]:
     """
     Compute all engagement-related masks once for efficiency.
     
@@ -372,7 +375,7 @@ def compute_engagement_masks(data: Dict[str, np.ndarray], pitch_threshold: float
     dive_start_indices = np.where(dive_transitions == 1)[0]
     
     # Compute impact mask
-    impact_mask = detect_ground_impact(data, accel_threshold, alt_threshold)
+    impact_mask = detect_ground_impact(data, accel_threshold, deriv_threshold, alt_threshold)
     impact_indices = np.where(impact_mask)[0]
     
     # Find first terminal engagement
@@ -470,7 +473,7 @@ def save_filtered_csv(data: Dict[str, np.ndarray], mask: np.ndarray, out_path: P
 
 def calculate_miss_distances(ulog, data: Dict[str, np.ndarray], mask: np.ndarray, 
                            engagement_masks: Dict = None, pitch_threshold: float = -4.0, 
-                           accel_threshold: float = 15.0, alt_threshold: float = 5.0,
+                           accel_threshold: float = 15.0, deriv_threshold: float = 2.0, alt_threshold: float = 5.0,
                            target_selection: str = "both") -> Dict[str, Dict[str, float]]:
     """Calculate miss distances for targets without plotting.
     
@@ -497,7 +500,7 @@ def calculate_miss_distances(ulog, data: Dict[str, np.ndarray], mask: np.ndarray
         first_impact_idx = engagement_masks.get('first_impact_idx')
     else:
         # Fallback: compute masks if not provided
-        masks = compute_engagement_masks(data, pitch_threshold, accel_threshold, alt_threshold)
+        masks = compute_engagement_masks(data, pitch_threshold, accel_threshold, deriv_threshold, alt_threshold)
         first_dive_idx = masks['first_dive_idx']
         first_impact_idx = masks['first_impact_idx']
     
@@ -558,7 +561,7 @@ def calculate_miss_distances(ulog, data: Dict[str, np.ndarray], mask: np.ndarray
 
 def process_multiple_logs(logs_dir: Path, output_dir: Path, 
                          pitch_threshold: float = -4.0, accel_threshold: float = 15.0, 
-                         alt_threshold: float = 5.0,
+                         deriv_threshold: float = 2.0, alt_threshold: float = 5.0,
                          target_selection: str = "both", interactive_3d: bool = False) -> None:
     """Process multiple log files and calculate miss distance statistics."""
     # Find all .ulg files in the logs directory and subdirectories
@@ -586,7 +589,7 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
             
             # Calculate terminal engagement mask
             engagement_masks = compute_engagement_masks(data, pitch_threshold, 
-                                                      accel_threshold, alt_threshold)
+                                                      accel_threshold, deriv_threshold, alt_threshold)
             mask = engagement_masks['terminal_engagement_mask']
             
             # Collect trajectory data for GPS plotting (even if no engagement)
@@ -609,7 +612,7 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
             
             # Calculate miss distances using pre-computed masks
             miss_distances = calculate_miss_distances(ulog, data, mask, engagement_masks, 
-                                                    pitch_threshold, accel_threshold, alt_threshold,
+                                                    pitch_threshold, accel_threshold, deriv_threshold, alt_threshold,
                                                     target_selection)
             
             if miss_distances:
@@ -749,7 +752,8 @@ def main():
     parser.add_argument("--logs-dir", type=Path, help="Path to directory containing multiple .ulg files for batch processing")
     parser.add_argument("--output", type=Path, default=Path("./tg_analysis_output"), help="Output directory for plots & data")
     parser.add_argument("--pitch-threshold", type=float, default=-4.0, help="Pitch threshold (deg) for dive detection. Default -4.0")
-    parser.add_argument("--accel-threshold", type=float, default=15.0, help="Acceleration threshold for impact detection (m/s²). Default 15.0")
+    parser.add_argument("--accel-threshold", type=float, default=15.0, help="Acceleration magnitude threshold for impact detection (m/s²). Default 15.0")
+    parser.add_argument("--deriv-threshold", type=float, default=2.0, help="Acceleration derivative threshold for impact detection (m/s²). Default 2.0")
     parser.add_argument("--alt-threshold", type=float, default=10.0, help="Altitude threshold for impact detection (m AGL). Default 10.0")
     parser.add_argument("--save-csv", action="store_true", help="Always save filtered CSV alongside plots")
     parser.add_argument("--debug", action="store_true", help="Print debug information about available ULog datasets and fields")
@@ -775,7 +779,7 @@ def main():
         
         print(f"Batch processing mode: analyzing all .ulg files in {args.logs_dir}")
         process_multiple_logs(args.logs_dir, args.output, 
-                            args.pitch_threshold, args.accel_threshold, args.alt_threshold,
+                            args.pitch_threshold, args.accel_threshold, args.deriv_threshold, args.alt_threshold,
                             args.target, args.interactive_3d)
         return
 
@@ -793,7 +797,7 @@ def main():
 
         
     # Compute terminal engagement mask
-    engagement_masks = compute_engagement_masks(data, args.pitch_threshold, args.accel_threshold, args.alt_threshold)
+    engagement_masks = compute_engagement_masks(data, args.pitch_threshold, args.accel_threshold, args.deriv_threshold, args.alt_threshold)
     mask = engagement_masks['terminal_engagement_mask']
 
     # Generate plots and analysis
