@@ -639,6 +639,7 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
     file_word = "file" if n_trajectories == 1 else "files"
     print(f"\n=== Creating Accelerometer Impact Plot for {n_trajectories} {file_word} ===")
     
+    plot_idx = 0  # Track actual plot index separately from loop index
     for i, traj_info in enumerate(trajectory_data):
         try:
             filename = traj_info['filename']
@@ -665,7 +666,7 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
             time_s = (data['timestamp_us'][dive_mask] - data['timestamp_us'][first_dive_idx]) * 1e-6
             
             # Plot acceleration magnitude from dive point (Method 1)
-            ax = axes[i]
+            ax = axes[plot_idx]
             ax.plot(time_s, data['accel_magnitude'][dive_mask], 'b-', linewidth=1, alpha=0.7, label='Accel Magnitude')
             
             # Mark detected impacts (only those after dive point)
@@ -709,12 +710,14 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
             
             print(f"  Processed {filename}: {len(valid_impacts)} impact(s) detected (from dive point)")
             
+            plot_idx += 1  # Increment only on successful plot
+            
         except Exception as e:
             print(f"  Error plotting accelerometer data for {filename}: {e}")
             continue
     
     # Hide unused subplots
-    for j in range(i + 1, len(axes)):
+    for j in range(plot_idx, len(axes)):
         axes[j].set_visible(False)
     
     plt.tight_layout()
@@ -747,6 +750,7 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
     
     print(f"\n=== Creating Method 2 (Derivative) Plot for {n_trajectories} {file_word} ===")
     
+    plot_idx = 0  # Track actual plot index separately from loop index
     for i, traj_info in enumerate(trajectory_data):
         try:
             filename = traj_info['filename']
@@ -770,58 +774,49 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
             # Get time array (relative to dive start)
             time_s = (data['timestamp_us'][dive_mask] - data['timestamp_us'][first_dive_idx]) * 1e-6
             
-            # Plot smoothed acceleration derivative (Method 2)
-            ax = axes[i]
+            # Plot smoothed acceleration derivative magnitude (Method 2)
+            ax = axes[plot_idx]
             if 'accel_derivative_smooth' in data:
                 ax.plot(time_s, data['accel_derivative_smooth'][dive_mask], 'c-', linewidth=1.5, alpha=0.7, 
-                       label='Accel Deriv (30-sample avg)')
+                       label='|Accel Deriv| (10-sample avg)')
             
-            # Mark detected impacts (only those after dive point)
-            impact_indices = engagement_masks.get('impact_indices', [])
-            valid_impacts = [idx for idx in impact_indices if idx >= first_dive_idx]
+            # Mark Method 1 impacts only (high acceleration magnitude at low altitude)
+            method1_impact_indices = data.get('method1_impact_indices', [])
+            valid_method1_impacts = [idx for idx in method1_impact_indices if idx >= first_dive_idx]
             
-            if len(valid_impacts) > 0 and 'accel_derivative_smooth' in data:
+            if len(valid_method1_impacts) > 0 and 'accel_derivative_smooth' in data:
                 # Convert to time relative to dive start
-                impact_times = (data['timestamp_us'][valid_impacts] - data['timestamp_us'][first_dive_idx]) * 1e-6
-                impact_derivs = data['accel_derivative_smooth'][valid_impacts]
+                impact_times = (data['timestamp_us'][valid_method1_impacts] - data['timestamp_us'][first_dive_idx]) * 1e-6
+                impact_derivs = data['accel_derivative_smooth'][valid_method1_impacts]
                 ax.scatter(impact_times, impact_derivs, color='red', s=100, marker='X',
-                          edgecolors='black', linewidth=2, zorder=5, label='Detected Impact')
+                          edgecolors='black', linewidth=2, zorder=5, label='Method 1 Impact')
                 
-                # Add vertical lines at impacts
-                for impact_time in impact_times:
-                    ax.axvline(x=impact_time, color='red', linestyle='--', alpha=0.5, linewidth=1)
+                # # Add vertical lines at impacts
+                # for impact_time in impact_times:
+                #     ax.axvline(x=impact_time, color='red', linestyle='--', alpha=0.5, linewidth=1)
             
-            # Mark derivative thresholds
+            # Mark derivative threshold (only positive since we're using magnitude)
             ax.axhline(y=15.0, color='orange', linestyle=':', alpha=0.5, linewidth=1.5, 
-                      label='Deriv Threshold (±15 m/s²)')
-            ax.axhline(y=-15.0, color='orange', linestyle=':', alpha=0.5, linewidth=1.5)
-            
-            # Add altitude as secondary y-axis
-            ax2 = ax.twinx()
-            ax2.plot(time_s, data['altitude_agl'][dive_mask], 'g-', linewidth=1, alpha=0.4, label='Altitude AGL')
-            ax2.axhline(y=10.0, color='purple', linestyle=':', alpha=0.5, linewidth=1.5,
-                       label='Alt Threshold (10m)')
-            ax2.set_ylabel('Altitude [m AGL]', color='g')
-            ax2.tick_params(axis='y', labelcolor='g')
+                      label='Deriv Threshold (15 m/s²)')
             
             # Configure primary axis
             ax.set_xlabel('Time [s]')
-            ax.set_ylabel('Acceleration Derivative [m/s²]', color='c')
+            ax.set_ylabel('|Acceleration Derivative| [m/s²]', color='c')
             ax.set_title(f'{filename}', fontsize=10)
             ax.grid(True, alpha=0.3)
             ax.tick_params(axis='y', labelcolor='c')
             
-            # Combine legends
-            lines1, labels1 = ax.get_legend_handles_labels()
-            lines2, labels2 = ax2.get_legend_handles_labels()
-            ax.legend(lines1 + lines2, labels1 + labels2, loc='upper right', fontsize=8)
+            # Add legend
+            ax.legend(loc='upper right', fontsize=8)
+            
+            plot_idx += 1  # Increment only on successful plot
             
         except Exception as e:
             print(f"  Error plotting Method 2 data for {filename}: {e}")
             continue
     
     # Hide unused subplots
-    for j in range(i + 1, len(axes)):
+    for j in range(plot_idx, len(axes)):
         axes[j].set_visible(False)
     
     plt.tight_layout()

@@ -296,20 +296,27 @@ def detect_ground_impact(data: Dict[str, np.ndarray], accel_threshold: float = 1
     # Calculate acceleration derivative (change in acceleration)
     accel_deriv = np.diff(data['accel_magnitude'], prepend=data['accel_magnitude'][0])
     
-    # Calculate smoothed acceleration derivative (30-sample moving average)
-    window_size = 30
+    # Calculate smoothed acceleration derivative (10-sample moving average)
+    window_size = 10
     if len(accel_deriv) >= window_size:
         accel_deriv_smooth = np.convolve(accel_deriv, np.ones(window_size)/window_size, mode='same')
     else:
         accel_deriv_smooth = accel_deriv
     
+    # Use magnitude of smoothed derivative
+    accel_deriv_smooth_mag = np.abs(accel_deriv_smooth)
+    
     # Store derivatives in data for plotting
     data['accel_derivative'] = accel_deriv
-    data['accel_derivative_smooth'] = accel_deriv_smooth
+    data['accel_derivative_smooth'] = accel_deriv_smooth_mag  # Store magnitude
     
-    # Large change in smoothed derivative
-    large_deriv_change = np.abs(accel_deriv_smooth) > accel_threshold
+    # Large change in smoothed derivative magnitude
+    large_deriv_change = accel_deriv_smooth_mag > accel_threshold
     method2_candidates = large_deriv_change & low_altitude
+    
+    # Store method 1 impact indices separately for plotting
+    method1_impact_indices = np.where(method1_candidates)[0]
+    data['method1_impact_indices'] = method1_impact_indices
     
     # Combine both methods
     impact_candidates = method1_candidates | method2_candidates
