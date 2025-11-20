@@ -261,6 +261,11 @@ def plot_roll_pitch(data: Dict[str, np.ndarray], mask: np.ndarray, out_dir: Path
         print("matplotlib not available, skipping roll/pitch timeseries plot.")
         return
     
+    # Check if mask has any data
+    if not np.any(mask):
+        print("No terminal engagement data to plot for roll/pitch timeseries.")
+        return
+    
     # Get indices within the mask for marking dive and impact
     mask_indices = np.where(mask)[0]
     first_dive_idx = engagement_masks.get('first_dive_idx') if engagement_masks else mask_indices[0]
@@ -690,6 +695,17 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
                           edgecolors='black', linewidth=2, zorder=5, label='Method 2 Impact')
                 ax.axvline(x=impact_time, color='orange', linestyle=':', alpha=0.5, linewidth=1)
             
+            # Mark fallback impacts (Method 3: 1m AGL)
+            if 'fallback_impact_indices' in data and len(data['fallback_impact_indices']) > 0:
+                fallback_impacts = data['fallback_impact_indices']
+                valid_fallback = [idx for idx in fallback_impacts if idx >= first_dive_idx]
+                for idx in valid_fallback:
+                    impact_time = time_s[np.where(dive_mask)[0] == idx][0] if np.any(np.where(dive_mask)[0] == idx) else None
+                    if impact_time is not None:
+                        ax.scatter(impact_time, data['accel_magnitude'][idx], color='purple', s=150, marker='D',
+                                  edgecolors='black', linewidth=2, zorder=5, label='Method 3: Fallback (1m AGL)')
+                        ax.axvline(x=impact_time, color='purple', linestyle=':', alpha=0.5, linewidth=1)
+            
             # Mark acceleration threshold
             ax.axhline(y=15.0, color='orange', linestyle=':', alpha=0.5, linewidth=1.5, 
                       label='Accel Threshold (15 m/s²)')
@@ -809,6 +825,17 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
                 ax.scatter(impact_time, impact_deriv, color='orange', s=100, marker='o',
                           edgecolors='black', linewidth=2, zorder=5, label='Method 2 Impact')
                 ax.axvline(x=impact_time, color='orange', linestyle=':', alpha=0.5, linewidth=1)
+            
+            # Mark fallback impacts (Method 3: 1m AGL)
+            if 'fallback_impact_indices' in data and len(data['fallback_impact_indices']) > 0:
+                fallback_impacts = data['fallback_impact_indices']
+                valid_fallback = [idx for idx in fallback_impacts if idx >= first_dive_idx]
+                for idx in valid_fallback:
+                    impact_time = time_s[np.where(dive_mask)[0] == idx][0] if np.any(np.where(dive_mask)[0] == idx) else None
+                    if impact_time is not None and 'accel_derivative_smooth' in data:
+                        ax.scatter(impact_time, data['accel_derivative_smooth'][idx], color='purple', s=150, marker='D',
+                                  edgecolors='black', linewidth=2, zorder=5, label='Method 3: Fallback (1m AGL)')
+                        ax.axvline(x=impact_time, color='purple', linestyle=':', alpha=0.5, linewidth=1)
             
             # Mark derivative threshold (only positive since we're using magnitude)
             ax.axhline(y=2.0, color='orange', linestyle=':', alpha=0.5, linewidth=1.5, 

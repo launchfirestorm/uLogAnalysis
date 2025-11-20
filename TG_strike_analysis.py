@@ -272,12 +272,14 @@ def extract_position_attitude(ulog) -> Dict[str, np.ndarray]:
     }
 
 
-def detect_ground_impact(data: Dict[str, np.ndarray], accel_threshold: float = 15.0, deriv_threshold: float = 2.0, alt_threshold: float = 10.0) -> np.ndarray:
+def detect_ground_impact(data: Dict[str, np.ndarray], dive_start_idx: int = None, accel_threshold: float = 15.0, deriv_threshold: float = 2.0, alt_threshold: float = 10.0) -> np.ndarray:
     """
     Detect ground impact using accelerometer magnitude and derivative with altitude data.
+    Only detects impacts after the dive starts.
     
     Args:
         data: Data dictionary containing accelerometer and altitude data
+        dive_start_idx: Index where the first dive starts (impacts before this are ignored)
         accel_threshold: Acceleration magnitude threshold for impact (m/s²)
         deriv_threshold: Acceleration derivative magnitude threshold for impact (m/s²)
         alt_threshold: Altitude threshold - only consider impacts below this height (m)
@@ -286,6 +288,14 @@ def detect_ground_impact(data: Dict[str, np.ndarray], accel_threshold: float = 1
         Boolean array indicating impact points
     """
     impact_mask = np.zeros(len(data['timestamp_us']), dtype=bool)
+    
+    # If no dive detected, return empty mask
+    if dive_start_idx is None:
+        print("No dive detected - cannot detect impacts")
+        data['method1_impact_indices'] = np.array([], dtype=int)
+        data['method2_impact_indices'] = np.array([], dtype=int)
+        data['fallback_impact_indices'] = np.array([], dtype=int)
+        return impact_mask
     
     low_altitude = data['altitude_agl'] < alt_threshold
     
@@ -339,15 +349,36 @@ def detect_ground_impact(data: Dict[str, np.ndarray], accel_threshold: float = 1
             if timestamps[current_idx] - timestamps[last_impact_idx] > time_diff_threshold:
                 filtered_impacts.append(current_idx)
         
-        impact_mask[filtered_impacts] = True
+        # Filter to only keep impacts after the dive
+        filtered_impacts_after_dive = [idx for idx in filtered_impacts if idx > dive_start_idx]
+        impact_mask[filtered_impacts_after_dive] = True
         
-        # print(f"Impact detection: Found {len(filtered_impacts)} impact events")
+        # print(f"Impact detection: Found {len(filtered_impacts_after_dive)} impact events after dive")
         # print(f"  - Acceleration threshold: {accel_threshold} m/s²")
         # print(f"  - Altitude threshold: {alt_threshold} m") 
-        # impact_times = [(data['timestamp_us'][idx] - data['timestamp_us'][0]) * 1e-6 for idx in filtered_impacts]
+        # impact_times = [(data['timestamp_us'][idx] - data['timestamp_us'][0]) * 1e-6 for idx in filtered_impacts_after_dive]
         # print(f"  - Impact times (relative): {[f'{t:.1f}s' for t in impact_times]}")
+    
+    # Method 3: Fallback to <0m AGL AND >0.5 accel deriv magnitude if no acceleration-based impacts detected after dive
+    if not np.any(impact_mask):
+        print("No acceleration-based impacts detected after dive")
+        
+        # Find first point after dive where altitude drops below 0m AGL AND accel deriv > 0.5
+        below_0m = data['altitude_agl'] < 0.0
+        high_deriv = accel_deriv_smooth_mag > 0.5
+        fallback_candidates = below_0m & high_deriv
+        fallback_candidates[:dive_start_idx] = False  # Only consider points after dive
+        
+        if np.any(fallback_candidates):
+            fallback_idx = np.where(fallback_candidates)[0][0]
+            impact_mask[fallback_idx] = True
+            data['fallback_impact_indices'] = np.array([fallback_idx])
+            print(f"Using Method 3 fallback: <0m AGL + >0.5 accel deriv at index {fallback_idx}")
+        else:
+            data['fallback_impact_indices'] = np.array([], dtype=int)
+            print("Warning: No point meeting Method 3 criteria (<0m AGL + >0.5 accel deriv) found after dive")
     else:
-        print("Impact detection: No impact events detected")
+        data['fallback_impact_indices'] = np.array([], dtype=int)
     
     return impact_mask
 
@@ -369,32 +400,31 @@ def compute_engagement_masks(data: Dict[str, np.ndarray], pitch_threshold: float
     """
     n_samples = len(data['timestamp_us'])
     
-    # Compute dive mask and transitions
+    # Step 1: Compute dive mask and transitions
     dive_mask = data['pitch_deg'] < pitch_threshold
     dive_transitions = np.diff(dive_mask.astype(int), prepend=0)
     dive_start_indices = np.where(dive_transitions == 1)[0]
     
-    # Compute impact mask
-    impact_mask = detect_ground_impact(data, accel_threshold, deriv_threshold, alt_threshold)
+    # Get first dive index (or None if no dive detected)
+    first_dive_idx = dive_start_indices[0] if len(dive_start_indices) > 0 else None
+    
+    # Step 2: Compute impact mask (only after dive starts)
+    impact_mask = detect_ground_impact(data, first_dive_idx, accel_threshold, deriv_threshold, alt_threshold)
     impact_indices = np.where(impact_mask)[0]
     
-    # Find first terminal engagement
+    # Step 3: Find first terminal engagement (dive to impact)
     terminal_engagement_mask = np.zeros(n_samples, dtype=bool)
-    first_dive_idx = None
     first_impact_idx = None
     
-    if len(dive_start_indices) > 0 and len(impact_indices) > 0:
-        first_dive_idx = dive_start_indices[0]
-        future_impacts = impact_indices[impact_indices > first_dive_idx]
+    if first_dive_idx is not None and len(impact_indices) > 0:
+        # By design, all impacts in impact_indices are after the dive
+        first_impact_idx = impact_indices[0]
         
-        if len(future_impacts) > 0:
-            first_impact_idx = future_impacts[0]
-            
-            # Validate timing (< 30 seconds between dive and impact)
-            timestamps = data['timestamp_us']
-            time_diff = (timestamps[first_impact_idx] - timestamps[first_dive_idx]) * 1e-6
-            if time_diff < 30.0:
-                terminal_engagement_mask[first_dive_idx:first_impact_idx+1] = True
+        # Validate timing (< 30 seconds between dive and impact)
+        timestamps = data['timestamp_us']
+        time_diff = (timestamps[first_impact_idx] - timestamps[first_dive_idx]) * 1e-6
+        if time_diff < 30.0:
+            terminal_engagement_mask[first_dive_idx:first_impact_idx+1] = True
     
     # Print detection summary
     engagements = 1 if np.any(terminal_engagement_mask) else 0
