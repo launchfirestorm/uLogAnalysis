@@ -442,16 +442,6 @@ def compute_engagement_masks(data: Dict[str, np.ndarray], pitch_threshold: float
     }
 
 
-def detect_terminal_engagement(data: Dict[str, np.ndarray], pitch_threshold: float = -4.0, 
-                              accel_threshold: float = 15.0, alt_threshold: float = 5.0) -> np.ndarray:
-    """
-    Detect terminal engagement segment from dive start to ground impact.
-    (Wrapper function for backward compatibility)
-    """
-    masks = compute_engagement_masks(data, pitch_threshold, accel_threshold, alt_threshold)
-    return masks['terminal_engagement_mask']
-
-
 def detect_offboard_transitions(data: Dict[str, np.ndarray], mask: np.ndarray) -> tuple[list, list]:
     """
     Detect offboard mode transitions within the filtered data segment.
@@ -848,6 +838,11 @@ def main():
     
     # plot_3d_position(data, mask, args.output)
     plot_rpy_timeseries(data, mask, args.output)
+    
+    # Create GPS trajectory plot for single file
+    create_combined_gps_trajectory_plot([args.ulog], args.output, args.target, 
+                                       args.pitch_threshold, args.accel_threshold, 
+                                       args.alt_threshold, args.interactive_3d)
 
     if args.save_csv:
         save_filtered_csv(data, mask, args.output / "position_attitude_filtered.csv")
