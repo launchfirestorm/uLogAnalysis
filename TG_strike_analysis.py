@@ -9,26 +9,43 @@ from pathlib import Path
 from typing import Dict, Any
 
 import numpy as np
+
+
+
 # Import our custom modules
 from tg_plotting import (
-    set_matplotlib_backend as plotting_set_backend, plot_3d_terminal_engagement,
-    plot_roll_pitch, gps_trajectory_plot
+    plot_3d_terminal_engagement,
+    plot_roll_pitch, 
+    gps_trajectory_plot
 )
 from tg_utils import (
     quaternion_to_euler as quaternion_to_euler, 
     quaternion_to_euler_degrees as quaternion_to_euler_degrees, 
-
 )
 
-# Global flag for interactive mode - will be set when parsing arguments
-_INTERACTIVE_MODE = False
-
 def set_matplotlib_backend(interactive: bool = False):
-    """Set matplotlib backend based on interactive mode."""
-    global _INTERACTIVE_MODE
-    _INTERACTIVE_MODE = interactive
-    # Use the function from our plotting module
-    plotting_set_backend(interactive)
+    """Set the appropriate matplotlib backend based on interactive mode."""
+    try:
+        import matplotlib
+        if interactive:
+            try:
+                matplotlib.use('TkAgg', force=True)
+                backend = 'TkAgg'
+            except ImportError:
+                try:
+                    matplotlib.use('Qt5Agg', force=True)
+                    backend = 'Qt5Agg'
+                except ImportError:
+                    matplotlib.use('Agg', force=True)
+                    backend = 'Agg'
+                    print("Warning: No interactive backend available, using Agg")
+        else:
+            matplotlib.use('Agg', force=True)
+            backend = 'Agg'
+        
+        print(f"Using {'interactive' if interactive else 'static'} matplotlib backend: {backend}")
+    except Exception as e:
+        print(f"Backend setup error: {e}")
 
 # Ensure we can import FlightReviewLib even though directory has a space.
 LIB_PATH = Path(__file__).parent / "FlightReviewLib"
@@ -177,14 +194,6 @@ def extract_position_attitude(ulog) -> Dict[str, np.ndarray]:
     except Exception as e:
         print(f"Attitude setpoint data not available: {e}")
     
-    # Extract position setpoint index and coordinates if available
-    pos_sp_index_i = np.zeros(len(t_pos), dtype=int)
-    pos_sp_lat_i = np.zeros(len(t_pos))
-    pos_sp_lon_i = np.zeros(len(t_pos))
-    pos_sp_alt_i = np.zeros(len(t_pos))
-    pos_sp_x_i = np.zeros(len(t_pos))
-    pos_sp_y_i = np.zeros(len(t_pos))
-    pos_sp_z_i = np.zeros(len(t_pos))
 
     # Extract accelerometer data for impact detection
     accel_magnitude_i = np.zeros(len(t_pos))
@@ -208,21 +217,9 @@ def extract_position_attitude(ulog) -> Dict[str, np.ndarray]:
         
         # Calculate total acceleration magnitude
         accel_magnitude_i = np.sqrt(accel_x_i**2 + accel_y_i**2 + accel_z_i**2)
-        print(f"Accelerometer data interpolated. Magnitude range: [{np.min(accel_magnitude_i):.2f}, {np.max(accel_magnitude_i):.2f}] m/s²")
     except Exception as e:
         print(f"Accelerometer data not available: {e}")
-    
-    # # Extract landing detection status if available
-    # try:
-    #     land_data = ulog.get_dataset('vehicle_land_detected').data
-    #     land_timestamps = land_data['timestamp'].astype(np.int64)
-        
-    #     # Interpolate landing detection data
-    #     landed_i = np.interp(t_pos, land_timestamps, land_data['landed'])
-    #     ground_contact_i = np.interp(t_pos, land_timestamps, land_data['ground_contact']) 
-    #     print(f"Landing detection data interpolated. Landed range: [{np.min(landed_i):.1f}, {np.max(landed_i):.1f}]")
-    # except Exception as e:
-    #     print(f"Landing detection data not available: {e}")
+
     
     # Extract flight mode data if available
     flight_mode_i = np.zeros(len(t_pos))
@@ -261,7 +258,6 @@ def extract_position_attitude(ulog) -> Dict[str, np.ndarray]:
         "roll_sp_deg": roll_sp_i,
         "pitch_sp_deg": pitch_sp_i,
         "yaw_sp_deg": yaw_sp_i,
-        "pos_sp_index": pos_sp_index_i,
         "accel_magnitude": accel_magnitude_i,
         "accel_x": accel_x_i,
         "accel_y": accel_y_i,
@@ -390,8 +386,6 @@ def compute_engagement_masks(data: Dict[str, np.ndarray], pitch_threshold: float
     duration = end_time - start_time if engagements > 0 else 0
     
     print(f"Terminal engagement detection: Found {engagements} engagement segments")
-    print(f"  - Dive threshold: pitch < {pitch_threshold}°")
-    print(f"  - Impact threshold: accel > {accel_threshold} m/s², alt < {alt_threshold} m")
     if engagements > 0:
         print(f"  - Segment 1: {start_time:.1f}s → {end_time:.1f}s (duration: {duration:.1f}s)")
     
@@ -724,6 +718,10 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     print(f"\nTotal logs processed: {len(log_files)}")
     print(f"Successful engagements: {len([r for r in log_results if r['status'] == 'Success'])}")
     
+    # Create 3D terminal engagement plot for batch (shows all trajectories with mean miss distance)
+    mean_miss = stats_output[0]['mean'] if stats_output else None
+    plot_3d_terminal_engagement(trajectory_data, output_dir, target_selection, interactive_3d, mean_miss)
+    
     # Create GPS trajectory plot for visual debugging (shows entire trajectories)
     gps_trajectory_plot(trajectory_data, output_dir, target_selection, interactive_3d)
 
@@ -743,7 +741,7 @@ def main():
     
     args = parser.parse_args()
     
-    # Set matplotlib backend based on interactive mode BEFORE any matplotlib imports
+    # Set matplotlib backend based on interactive mode
     set_matplotlib_backend(args.interactive_3d)
     
     # Check for required arguments based on mode
@@ -783,8 +781,14 @@ def main():
     selected = int(np.count_nonzero(mask))
 
     # Generate plots and analysis
-    plot_3d_terminal_engagement(ulog, data, mask, args.output, args.target,
-                               args.interactive_3d, engagement_masks)
+    trajectory_data_3d = [{
+        'ulog': ulog,
+        'data': data,
+        'mask': mask,
+        'engagement_masks': engagement_masks,
+        'filename': args.ulog.name
+    }]
+    plot_3d_terminal_engagement(trajectory_data_3d, args.output, args.target, args.interactive_3d)
     plot_roll_pitch(data, mask, args.output, args.interactive_3d, engagement_masks)
     
     # Create GPS trajectory plot for single file (shows entire trajectory)

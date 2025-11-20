@@ -17,42 +17,23 @@ except ImportError:
     print("Warning: matplotlib not available, plotting functions will not work.")
 
 
-def set_matplotlib_backend(interactive: bool = False):
-    """Set the appropriate matplotlib backend based on interactive mode."""
-    if not matplotlib_available:
-        return
-        
-    try:
-        import matplotlib
-        # Force backend selection before importing pyplot
-        if interactive:
-            # Try TkAgg first, fallback to Qt5Agg
-            try:
-                matplotlib.use('TkAgg', force=True)
-                backend = 'TkAgg'
-            except ImportError:
-                try:
-                    matplotlib.use('Qt5Agg', force=True)
-                    backend = 'Qt5Agg'
-                except ImportError:
-                    matplotlib.use('Agg', force=True)  # Fallback to non-interactive
-                    backend = 'Agg'
-                    print("Warning: No interactive backend available, using Agg")
-        else:
-            matplotlib.use('Agg', force=True)
-            backend = 'Agg'
-        
-        print(f"Using {'interactive' if interactive else 'static'} matplotlib backend: {backend}")
-    except Exception as e:
-        print(f"Backend setup error: {e}")
 
 
-def plot_3d_terminal_engagement(ulog, data: Dict[str, np.ndarray], mask: np.ndarray, out_dir: Path, 
+
+def plot_3d_terminal_engagement(trajectory_data: list, out_dir: Path, 
                                 target_selection: str = "Container", 
-                                interactive: bool = False, engagement_masks: Dict = None):
-    """Create 3D trajectory plot for terminal engagement segments only.
+                                interactive: bool = False, mean_miss_distance: float = None):
+    """Create 3D trajectory plot for terminal engagement segments.
     
-    This plot shows only the masked terminal engagement portion (dive to impact).
+    For single file: Shows one trajectory with dive/impact markers.
+    For batch: Shows all trajectories with mean miss distance circle around target.
+    
+    Args:
+        trajectory_data: List of dicts with 'ulog', 'data', 'mask', 'engagement_masks', 'filename'
+        out_dir: Output directory
+        target_selection: Target name ('Container' or 'Van')
+        interactive: Whether to show interactive plot
+        mean_miss_distance: Mean miss distance for batch plots (meters)
     """
     if not matplotlib_available:
         print("matplotlib not available, skipping 3D trajectory plot.")
@@ -64,80 +45,166 @@ def plot_3d_terminal_engagement(ulog, data: Dict[str, np.ndarray], mask: np.ndar
     except ImportError:
         print("matplotlib not available, skipping 3D trajectory plot.")
         return
-
-    # Define target locations
+    
+    # Ensure trajectory_data is a list
+    if not isinstance(trajectory_data, list):
+        trajectory_data = [trajectory_data]
+    
+    # Define target locations in GPS coordinates
     all_targets = {
-        'Container': {'x': 0, 'y': 0, 'z': 0, 'color': 'red', 'marker': 's'},
-        'Van': {'x': -19.5, 'y': -14.4, 'z': 0, 'color': 'green', 'marker': 'o'}
+        'Container': {'lat': 43.2222722, 'lon': -75.3903593, 'alt_agl': 0.0, 'color': 'red', 'marker': 's'},
+        'Van': {'lat': 43.2221788, 'lon': -75.3905151, 'alt_agl': 0.0, 'color': 'green', 'marker': 'o'}
     }
     
-    # Filter target display based on selection
     target_display = {target_selection: all_targets[target_selection]}
     
-    fig = plt.figure(figsize=(12, 10))
+    fig = plt.figure(figsize=(14, 12))
     ax = fig.add_subplot(111, projection='3d')
     
-    # Get indices within the mask for marking dive and impact
-    mask_indices = np.where(mask)[0]
-    first_dive_idx = engagement_masks.get('first_dive_idx') if engagement_masks else mask_indices[0]
-    first_impact_idx = engagement_masks.get('first_impact_idx') if engagement_masks else mask_indices[-1]
+    colors = plt.cm.tab10(np.linspace(0, 1, len(trajectory_data)))
+    is_batch = len(trajectory_data) > 1
     
-    # Find positions within masked data
-    dive_pos_in_mask = np.where(mask_indices == first_dive_idx)[0]
-    impact_pos_in_mask = np.where(mask_indices == first_impact_idx)[0]
+    # Get reference origin from first trajectory's GPS home position
+    first_ulog = trajectory_data[0]['ulog']
+    try:
+        # Get GPS home position (first GPS fix) as reference origin
+        gps_data = first_ulog.get_dataset("vehicle_gps_position").data
+        valid_fix = gps_data['fix_type'] > 2
+        if np.any(valid_fix):
+            ref_lat = gps_data['lat'][valid_fix][0] / 1e7
+            ref_lon = gps_data['lon'][valid_fix][0] / 1e7
+        else:
+            print("Warning: No valid GPS fix found, using default reference")
+            ref_lat = 43.2298306
+            ref_lon = -75.4014135
+    except Exception as e:
+        print(f"Warning: Could not get GPS reference: {e}")
+        ref_lat = 43.2298306
+        ref_lon = -75.4014135
     
-    # Plot trajectory (only terminal engagement)
-    trajectory_x = data["x"][mask] - data["x"][mask][0]
-    trajectory_y = data["y"][mask] - data["y"][mask][0]
-    trajectory_z = data["altitude_agl"][mask]
+    # Convert target GPS to local NED coordinates relative to reference
+    def gps_to_local_ned(lat, lon, ref_lat, ref_lon):
+        """Convert GPS coordinates to local NED (North-East-Down) relative to reference."""
+        import math
+        R = 6371000  # Earth radius in meters
+        
+        # Convert to radians
+        lat_rad = math.radians(lat)
+        lon_rad = math.radians(lon)
+        ref_lat_rad = math.radians(ref_lat)
+        ref_lon_rad = math.radians(ref_lon)
+        
+        # Calculate North and East offsets
+        dlat = lat - ref_lat
+        dlon = lon - ref_lon
+        
+        north = dlat * (math.pi / 180.0) * R
+        east = dlon * (math.pi / 180.0) * R * math.cos(ref_lat_rad)
+        
+        return north, east
     
-    ax.plot(trajectory_x, trajectory_y, trajectory_z, 'b-', linewidth=2, label='Terminal Engagement')
+    # Convert target to local coordinates
+    target_north, target_east = gps_to_local_ned(
+        all_targets[target_selection]['lat'],
+        all_targets[target_selection]['lon'],
+        ref_lat, ref_lon
+    )
     
-    # Mark dive start (not "start" but "dive start")
-    if len(dive_pos_in_mask) > 0:
-        dive_idx = dive_pos_in_mask[0]
-        ax.scatter(trajectory_x[dive_idx], trajectory_y[dive_idx], trajectory_z[dive_idx], 
-                  color='orange', s=150, marker='^', edgecolors='black', linewidth=2, 
-                  label='Dive Start', zorder=6)
+    # Process each trajectory
+    for i, traj_info in enumerate(trajectory_data):
+        data = traj_info['data']
+        mask = traj_info['mask']
+        engagement_masks = traj_info['engagement_masks']
+        filename = traj_info.get('filename', 'trajectory')
+        
+        if not np.any(mask):
+            continue
+        
+        # Get indices for dive and impact
+        mask_indices = np.where(mask)[0]
+        first_dive_idx = engagement_masks.get('first_dive_idx', mask_indices[0])
+        first_impact_idx = engagement_masks.get('first_impact_idx', mask_indices[-1])
+        
+        # Get reference origin from first trajectory
+        if i == 0:
+            # Use first trajectory's start as plotting origin
+            origin_x = data["x"][mask][0]
+            origin_y = data["y"][mask][0]
+            
+            # Target position in NED is (North, East) which maps to (x, y) in local frame
+            target_x = target_north
+            target_y = target_east
+        
+        # Plot trajectory relative to first trajectory's origin
+        trajectory_x = data["x"][mask] - origin_x
+        trajectory_y = data["y"][mask] - origin_y
+        trajectory_z = data["altitude_agl"][mask]
+        
+        label = filename if is_batch else 'Terminal Engagement'
+        color = colors[i] if is_batch else 'b'
+        linewidth = 1.5 if is_batch else 2
+        
+        ax.plot(trajectory_x, trajectory_y, trajectory_z, color=color, linewidth=linewidth, 
+               alpha=0.7 if is_batch else 1.0, label=label)
+        
+        # Find positions within masked data
+        dive_pos_in_mask = np.where(mask_indices == first_dive_idx)[0]
+        impact_pos_in_mask = np.where(mask_indices == first_impact_idx)[0]
+        
+        # Mark dive start
+        if len(dive_pos_in_mask) > 0:
+            dive_idx = dive_pos_in_mask[0]
+            ax.scatter(trajectory_x[dive_idx], trajectory_y[dive_idx], trajectory_z[dive_idx], 
+                      color=color, s=100, marker='^', edgecolors='orange', linewidth=2, zorder=6)
+        
+        # Mark impact point
+        if len(impact_pos_in_mask) > 0:
+            impact_idx = impact_pos_in_mask[0]
+            ax.scatter(trajectory_x[impact_idx], trajectory_y[impact_idx], trajectory_z[impact_idx], 
+                      color=color, s=120, marker='X', edgecolors='red', linewidth=2, zorder=6)
     
-    # Mark impact point
-    if len(impact_pos_in_mask) > 0:
-        impact_idx = impact_pos_in_mask[0]
-        ax.scatter(trajectory_x[impact_idx], trajectory_y[impact_idx], trajectory_z[impact_idx], 
-                  color='red', s=200, marker='X', edgecolors='black', linewidth=2, 
-                  label='Impact', zorder=6)
-    
-    # Plot targets
+    # Plot target (altitude is relative to ground, so z=0)
     for target_name, target_info in target_display.items():
-        ax.scatter(target_info['x'], target_info['y'], target_info['z'], 
-                  color=target_info['color'], s=200, marker=target_info['marker'], 
+        ax.scatter(target_x, target_y, 0, 
+                  color=target_info['color'], s=250, marker=target_info['marker'], 
                   label=f'{target_name} Target', zorder=10, edgecolors='black', linewidth=2)
+    
+    # Add mean miss distance circle for batch plots
+    if is_batch and mean_miss_distance is not None:
+        # Create circle at ground level around target
+        theta = np.linspace(0, 2*np.pi, 100)
+        circle_x = target_x + mean_miss_distance * np.cos(theta)
+        circle_y = target_y + mean_miss_distance * np.sin(theta)
+        circle_z = np.zeros_like(theta)
+        ax.plot(circle_x, circle_y, circle_z, 'gray', linestyle='--', linewidth=2, 
+               alpha=0.7, label=f'Mean Miss: {mean_miss_distance:.1f}m')
     
     ax.set_xlabel('X [m]')
     ax.set_ylabel('Y [m]')
     ax.set_zlabel('Altitude AGL [m]')
-    ax.set_title(f'3D Terminal Engagement Trajectory (Target: {target_selection})')
-    ax.legend()
+    
+    title = f'3D Terminal Engagement Trajectories (Target: {target_selection})' if is_batch else f'3D Terminal Engagement Trajectory (Target: {target_selection})'
+    ax.set_title(title)
+    
+    # Adjust legend for batch mode
+    if is_batch:
+        ax.legend(loc='best', fontsize=8, ncol=2)
+    else:
+        ax.legend(loc='best')
+    
     ax.grid(True, alpha=0.3)
     
-    # Set equal aspect ratio
-    max_range = np.array([trajectory_x.max()-trajectory_x.min(), 
-                         trajectory_y.max()-trajectory_y.min(),
-                         trajectory_z.max()-trajectory_z.min()]).max() / 2.0
-    mid_x = (trajectory_x.max()+trajectory_x.min()) * 0.5
-    mid_y = (trajectory_y.max()+trajectory_y.min()) * 0.5
-    mid_z = (trajectory_z.max()+trajectory_z.min()) * 0.5
-    ax.set_xlim(mid_x - max_range, mid_x + max_range)
-    ax.set_ylim(mid_y - max_range, mid_y + max_range)
-    ax.set_zlim(mid_z - max_range, mid_z + max_range)
+    # Set view to show trajectories better
+    ax.view_init(elev=20, azim=45)
     
     if interactive:
-        plt.show()  # Show interactive plot
+        plt.show()
         print("Showing interactive 3D terminal engagement plot (close window to continue)")
     else:
         # Save plot
         target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
-        plot_path = out_dir / f"3d_terminal_engagement{target_suffix}.png"
+        prefix = "combined_3d_terminal_engagement" if is_batch else "3d_terminal_engagement"
+        plot_path = out_dir / f"{prefix}{target_suffix}.png"
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"Saved 3D trajectory plot: {plot_path}")
@@ -451,9 +518,9 @@ def gps_trajectory_plot(trajectory_data: list, output_dir: Path, target_selectio
         impact_alts = np.array(all_impact_alts)
         
         # Zoom to last 3 seconds before impact and 1 second after
-        time_min = max(0, impact_times.min() - 3.0)
+        time_min = impact_times.min() - 1.0
         time_max = impact_times.max() + 1.0
-        alt_min = -2.0  # Show slightly below ground
+        alt_min = min(-15.0, impact_alts.min()) - 10.0  # Show slightly below ground
         alt_max = max(15.0, impact_alts.max() + 10.0)  # Show up to 15m or impact alt + 10m
         
         ax_alt_zoom.set_xlim(time_min, time_max)
