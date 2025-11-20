@@ -9,20 +9,15 @@ from pathlib import Path
 from typing import Dict, Any
 
 import numpy as np
-
 # Import our custom modules
 from tg_plotting import (
-    set_matplotlib_backend as plotting_set_backend, plot_3d_terminal_engagement, plot_3d_position,
-    plot_rpy_timeseries, plot_pitch_trajectory, plot_position_trajectories,
-    create_combined_gps_trajectory_plot, create_combined_3d_plot
+    set_matplotlib_backend as plotting_set_backend, plot_3d_terminal_engagement,
+    plot_roll_pitch, gps_trajectory_plot
 )
 from tg_utils import (
-    quaternion_to_euler as utils_quaternion_to_euler, 
-    quaternion_to_euler_degrees as utils_quaternion_to_euler_degrees, 
-    load_log as utils_load_log,
-    extract_position_attitude as utils_extract_position_attitude, 
-    compute_terminal_engagement_mask as utils_compute_terminal_engagement_mask,
-    calculate_miss_distances as utils_calculate_miss_distances
+    quaternion_to_euler as quaternion_to_euler, 
+    quaternion_to_euler_degrees as quaternion_to_euler_degrees, 
+
 )
 
 # Global flag for interactive mode - will be set when parsing arguments
@@ -49,13 +44,6 @@ except ImportError as e:  # pragma: no cover
         "Also verify 'config_default.ini' exists at the project root. Original error: " + str(e)
     ) from e
 
-
-# # Use the function from tg_utils module
-quaternion_to_euler = utils_quaternion_to_euler
-
-
-# # Use the function from tg_utils module
-quaternion_to_euler_degrees = utils_quaternion_to_euler_degrees
 
 
 def print_ulog_debug_info(ulog):
@@ -285,30 +273,6 @@ def extract_position_attitude(ulog) -> Dict[str, np.ndarray]:
         "flight_mode": flight_mode_i,
         "offboard_mode": offboard_mode_i,
     }
-
-
-def compute_terminal_engagement_mask(data: Dict[str, np.ndarray], pitch_threshold: float = -4.0,
-                                    accel_threshold: float = 15.0, alt_threshold: float = 5.0) -> tuple[np.ndarray, Dict]:
-    """Compute boolean mask for terminal engagement segments (dive to impact).
-
-    Parameters
-    ----------
-    data : Dict[str, np.ndarray]
-        Extracted data dictionary.
-    pitch_threshold : float
-        Pitch angle threshold (deg) for dive detection.
-    accel_threshold : float
-        Acceleration threshold for impact detection (m/s²).
-    alt_threshold : float  
-        Altitude threshold for impact detection (m above ground).
-
-    Returns
-    -------
-    tuple[np.ndarray, Dict]
-        Boolean mask for terminal engagement and engagement masks dictionary
-    """
-    engagement_masks = compute_engagement_masks(data, pitch_threshold, accel_threshold, alt_threshold)
-    return engagement_masks['terminal_engagement_mask'], engagement_masks
 
 
 def detect_ground_impact(data: Dict[str, np.ndarray], accel_threshold: float = 15.0, alt_threshold: float = 5.0) -> np.ndarray:
@@ -586,7 +550,7 @@ def calculate_miss_distances(ulog, data: Dict[str, np.ndarray], mask: np.ndarray
 
 def process_multiple_logs(logs_dir: Path, output_dir: Path, 
                          pitch_threshold: float = -4.0, accel_threshold: float = 15.0, 
-                         alt_threshold: float = 5.0, plot_combined_3d: bool = False,
+                         alt_threshold: float = 5.0,
                          target_selection: str = "both", interactive_3d: bool = False) -> None:
     """Process multiple log files and calculate miss distance statistics."""
     # Find all .ulg files in the logs directory and subdirectories
@@ -602,7 +566,7 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     all_miss_distances = {target_selection: []}
     
     log_results = []
-    trajectory_data = []  # For combined 3D plotting
+    trajectory_data = []  # For GPS trajectory plotting
     
     for i, log_file in enumerate(log_files, 1):
         print(f"\n[{i}/{len(log_files)}] Processing: {log_file.name}")
@@ -613,8 +577,18 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
             data = extract_position_attitude(ulog)
             
             # Calculate terminal engagement mask
-            mask, engagement_masks = compute_terminal_engagement_mask(data, pitch_threshold, 
-                                                                    accel_threshold, alt_threshold)
+            engagement_masks = compute_engagement_masks(data, pitch_threshold, 
+                                                      accel_threshold, alt_threshold)
+            mask = engagement_masks['terminal_engagement_mask']
+            
+            # Collect trajectory data for GPS plotting (even if no engagement)
+            trajectory_data.append({
+                'filename': log_file.name,
+                'ulog': ulog,
+                'data': data,
+                'mask': mask,
+                'engagement_masks': engagement_masks
+            })
             
             if not np.any(mask):
                 print(f"  No terminal engagement found in {log_file.name}")
@@ -629,19 +603,6 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
             miss_distances = calculate_miss_distances(ulog, data, mask, engagement_masks, 
                                                     pitch_threshold, accel_threshold, alt_threshold,
                                                     target_selection)
-            
-            # Collect trajectory data for combined plotting (regardless of miss distance calculation success)
-            if plot_combined_3d and np.any(mask):
-                trajectory_data.append({
-                    'filename': log_file.name,
-                    'data': {
-                        'x': data['x'][mask],
-                        'y': data['y'][mask], 
-                        'z': data['altitude_agl'][mask]  # Use AGL altitude for consistency
-                    },
-                    'miss_distances': miss_distances if miss_distances else {}
-                })
-                print(f"  - Added trajectory data for {log_file.name} ({np.sum(mask)} points)")
             
             if miss_distances:
                 print(f"  Terminal engagement found:")
@@ -763,13 +724,8 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     print(f"\nTotal logs processed: {len(log_files)}")
     print(f"Successful engagements: {len([r for r in log_results if r['status'] == 'Success'])}")
     
-    # Create combined GPS trajectory plot for visual debugging
-    create_combined_gps_trajectory_plot(log_files, output_dir, target_selection, 
-                                      pitch_threshold, accel_threshold, alt_threshold, interactive_3d)
-    
-    # Create combined 3D plot if requested
-    if plot_combined_3d and trajectory_data:
-        create_combined_3d_plot(trajectory_data, all_miss_distances, output_dir, target_selection, interactive_3d)
+    # Create GPS trajectory plot for visual debugging (shows entire trajectories)
+    gps_trajectory_plot(trajectory_data, output_dir, target_selection, interactive_3d)
 
 
 def main():
@@ -779,11 +735,9 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("./tg_analysis_output"), help="Output directory for plots & data")
     parser.add_argument("--pitch-threshold", type=float, default=-4.0, help="Pitch threshold (deg) for dive detection. Default -4.0")
     parser.add_argument("--accel-threshold", type=float, default=15.0, help="Acceleration threshold for impact detection (m/s²). Default 15.0")
-    parser.add_argument("--alt-threshold", type=float, default=5.0, help="Altitude threshold for impact detection (m above ground). Default 5.0")
+    parser.add_argument("--alt-threshold", type=float, default=5.0, help="Altitude threshold for impact detection (m AGL). Default 5.0")
     parser.add_argument("--save-csv", action="store_true", help="Always save filtered CSV alongside plots")
     parser.add_argument("--debug", action="store_true", help="Print debug information about available ULog datasets and fields")
-    parser.add_argument("--show-setpoints", action="store_true", help="Overlay position setpoints on trajectory plots")
-    parser.add_argument("--plot-combined-3d", action="store_true", help="For batch processing, create combined 3D plot of all trajectories with mean miss distance circles")
     parser.add_argument("--interactive-3d", action="store_true", help="Show interactive 3D plots that can be rotated and zoomed (requires display)")
     parser.add_argument("--target", choices=["Container", "Van"], required=True, help="Target selection: 'Container' or 'Van' (required)")
     
@@ -807,7 +761,7 @@ def main():
         print(f"Batch processing mode: analyzing all .ulg files in {args.logs_dir}")
         process_multiple_logs(args.logs_dir, args.output, 
                             args.pitch_threshold, args.accel_threshold, args.alt_threshold,
-                            args.plot_combined_3d, args.target, args.interactive_3d)
+                            args.target, args.interactive_3d)
         return
 
     # Single file processing mode (original behavior)
@@ -815,7 +769,6 @@ def main():
         raise SystemExit(f"ULog file not found: {args.ulog}")
 
     args.output.mkdir(parents=True, exist_ok=True)
-    print(f"Loading ULog: {args.ulog}")
     ulog = load_log(args.ulog)
     
     if args.debug:
@@ -823,26 +776,26 @@ def main():
 
     data = extract_position_attitude(ulog)
 
-    print(f"Computing terminal engagement segments (dive to impact)...")
-    threshold_desc = f"terminal engagement (pitch < {args.pitch_threshold}° → accel > {args.accel_threshold} m/s²)"
         
     # Compute terminal engagement mask
-    mask, engagement_masks = compute_terminal_engagement_mask(data, args.pitch_threshold, 
-                                                            args.accel_threshold, args.alt_threshold)
+    engagement_masks = compute_engagement_masks(data, args.pitch_threshold, args.accel_threshold, args.alt_threshold)
+    mask = engagement_masks['terminal_engagement_mask']
     selected = int(np.count_nonzero(mask))
-    print(f"Selected {selected} samples ({threshold_desc}).")
 
     # Generate plots and analysis
-    plot_position_trajectories(ulog, data, args.output, args.show_setpoints, args.target)
-    plot_3d_terminal_engagement(ulog, data, mask, args.output, args.target, args.show_setpoints, args.interactive_3d)
+    plot_3d_terminal_engagement(ulog, data, mask, args.output, args.target,
+                               args.interactive_3d, engagement_masks)
+    plot_roll_pitch(data, mask, args.output, args.interactive_3d, engagement_masks)
     
-    # plot_3d_position(data, mask, args.output)
-    plot_rpy_timeseries(data, mask, args.output)
-    
-    # Create GPS trajectory plot for single file
-    create_combined_gps_trajectory_plot([args.ulog], args.output, args.target, 
-                                       args.pitch_threshold, args.accel_threshold, 
-                                       args.alt_threshold, args.interactive_3d)
+    # Create GPS trajectory plot for single file (shows entire trajectory)
+    trajectory_data = [{
+        'filename': args.ulog.name,
+        'ulog': ulog,
+        'data': data,
+        'mask': mask,
+        'engagement_masks': engagement_masks
+    }]
+    gps_trajectory_plot(trajectory_data, args.output, args.target, args.interactive_3d)
 
     if args.save_csv:
         save_filtered_csv(data, mask, args.output / "position_attitude_filtered.csv")

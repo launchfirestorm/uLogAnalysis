@@ -1,14 +1,5 @@
 # For single file processing
-python threshold_plot.py --ulog "Logs/Realflight/2025-11-18/12_32_29.ulg" --output "single_test_independent" --threshold-type terminal_engagement --tg-pitch-threshold -8.0 --tg-accel-threshold 10.0
+conda activate python38_flight_review_env ; python tg_strike_analysis.py --ulog "Logs\Realflight\TG_Sample_Set\2025_11_19_15_39_11-TG-strike-1.ulg" --output "Outputs/Test_Cases"  --pitch-threshold -4.0 --accel-threshold 10.0 --target Van
 
-# For batch processing  
-python threshold_plot.py --logs-dir "Logs" --threshold-type terminal_engagement \
-  --tg-pitch-threshold -6.0 --tg-accel-threshold 12.0
+conda activate python38_flight_review_env ; python tg_strike_analysis.py --logs-dir "Logs\Realflight\TG_Sample_Set" --output "Outputs/Test_Cases"  --pitch-threshold -4.0 --accel-threshold 10.0 --target Van
 
-# Conservative thresholds
-python threshold_plot.py --logs-dir "Logs" --output "results_conservative" \
-  --threshold-type terminal_engagement --tg-pitch-threshold -4.0 --tg-accel-threshold 15.0 --plot-combined-3d
-
-# Aggressive thresholds  
-python threshold_plot.py --logs-dir "Logs" --output "results_aggressive" \
-  --threshold-type terminal_engagement --tg-pitch-threshold -8.0 --tg-accel-threshold 10.0 --plot-combined-3d
