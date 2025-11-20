@@ -16,7 +16,8 @@ import numpy as np
 from tg_plotting import (
     plot_3d_terminal_engagement,
     plot_roll_pitch, 
-    gps_trajectory_plot
+    gps_trajectory_plot,
+    plot_accelerometer_impacts
 )
 from tg_utils import (
     quaternion_to_euler as quaternion_to_euler, 
@@ -271,13 +272,13 @@ def extract_position_attitude(ulog) -> Dict[str, np.ndarray]:
     }
 
 
-def detect_ground_impact(data: Dict[str, np.ndarray], accel_threshold: float = 15.0, alt_threshold: float = 5.0) -> np.ndarray:
+def detect_ground_impact(data: Dict[str, np.ndarray], accel_threshold: float = 15.0, alt_threshold: float = 10.0) -> np.ndarray:
     """
-    Detect ground impact using accelerometer and altitude data.
+    Detect ground impact using accelerometer magnitude and derivative with altitude data.
     
     Args:
         data: Data dictionary containing accelerometer and altitude data
-        accel_threshold: Acceleration magnitude threshold for impact (m/s²)
+        accel_threshold: Acceleration magnitude/change threshold for impact (m/s²)
         alt_threshold: Altitude threshold - only consider impacts below this height (m)
     
     Returns:
@@ -285,27 +286,33 @@ def detect_ground_impact(data: Dict[str, np.ndarray], accel_threshold: float = 1
     """
     impact_mask = np.zeros(len(data['timestamp_us']), dtype=bool)
     
-    # Method 1: High acceleration spikes at low altitude
-    high_accel = data['accel_magnitude'] > accel_threshold
     low_altitude = data['altitude_agl'] < alt_threshold
     
-    # Method 2: Sudden velocity changes (deceleration) 
-    if 'vertical_velocity' in data:
-        # Detect sudden changes in vertical velocity (impact deceleration)
-        vz_diff = np.diff(data['vertical_velocity'], prepend=data['vertical_velocity'][0])
-        sudden_decel = np.abs(vz_diff) > 5.0  # m/s velocity change threshold
-        
-        # Combine criteria: high acceleration OR sudden deceleration, both at low altitude
-        impact_candidates = (high_accel | sudden_decel) & low_altitude
-    else:
-        impact_candidates = high_accel & low_altitude
+    # Method 1: High acceleration magnitude at low altitude
+    high_accel = data['accel_magnitude'] > accel_threshold
+    method1_candidates = high_accel & low_altitude
     
-    # Method 3: Use landing detection if available
-    if 'landed' in data and np.any(data['landed'] > 0.5):
-        # Find transitions from not-landed to landed
-        landed_transitions = np.diff(data['landed'] > 0.5, prepend=False)
-        impact_by_landing = landed_transitions & (data['altitude_agl'] < alt_threshold * 2)
-        impact_candidates = impact_candidates | impact_by_landing
+    # Method 2: Large change in smoothed acceleration derivative at low altitude
+    # Calculate acceleration derivative (change in acceleration)
+    accel_deriv = np.diff(data['accel_magnitude'], prepend=data['accel_magnitude'][0])
+    
+    # Calculate smoothed acceleration derivative (30-sample moving average)
+    window_size = 30
+    if len(accel_deriv) >= window_size:
+        accel_deriv_smooth = np.convolve(accel_deriv, np.ones(window_size)/window_size, mode='same')
+    else:
+        accel_deriv_smooth = accel_deriv
+    
+    # Store derivatives in data for plotting
+    data['accel_derivative'] = accel_deriv
+    data['accel_derivative_smooth'] = accel_deriv_smooth
+    
+    # Large change in smoothed derivative
+    large_deriv_change = np.abs(accel_deriv_smooth) > accel_threshold
+    method2_candidates = large_deriv_change & low_altitude
+    
+    # Combine both methods
+    impact_candidates = method1_candidates | method2_candidates
     
     # Remove spurious detections by requiring impacts to be separated by at least 1 second
     impact_indices = np.where(impact_candidates)[0]
@@ -724,6 +731,9 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     
     # Create GPS trajectory plot for visual debugging (shows entire trajectories)
     gps_trajectory_plot(trajectory_data, output_dir, target_selection, interactive_3d)
+    
+    # Create accelerometer impact plot to validate impact detection
+    plot_accelerometer_impacts(trajectory_data, output_dir, target_selection, interactive_3d)
 
 
 def main():
@@ -733,7 +743,7 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("./tg_analysis_output"), help="Output directory for plots & data")
     parser.add_argument("--pitch-threshold", type=float, default=-4.0, help="Pitch threshold (deg) for dive detection. Default -4.0")
     parser.add_argument("--accel-threshold", type=float, default=15.0, help="Acceleration threshold for impact detection (m/s²). Default 15.0")
-    parser.add_argument("--alt-threshold", type=float, default=5.0, help="Altitude threshold for impact detection (m AGL). Default 5.0")
+    parser.add_argument("--alt-threshold", type=float, default=10.0, help="Altitude threshold for impact detection (m AGL). Default 10.0")
     parser.add_argument("--save-csv", action="store_true", help="Always save filtered CSV alongside plots")
     parser.add_argument("--debug", action="store_true", help="Print debug information about available ULog datasets and fields")
     parser.add_argument("--interactive-3d", action="store_true", help="Show interactive 3D plots that can be rotated and zoomed (requires display)")
@@ -799,6 +809,9 @@ def main():
         'engagement_masks': engagement_masks
     }]
     gps_trajectory_plot(trajectory_data, args.output, args.target, args.interactive_3d)
+    
+    # Create accelerometer impact plot to validate impact detection
+    plot_accelerometer_impacts(trajectory_data, args.output, args.target, args.interactive_3d)
 
     if args.save_csv:
         save_filtered_csv(data, mask, args.output / "position_attitude_filtered.csv")
