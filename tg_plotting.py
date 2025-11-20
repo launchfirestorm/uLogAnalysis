@@ -23,7 +23,7 @@ except ImportError:
 def plot_3d_terminal_engagement(trajectory_data: list, out_dir: Path, 
                                 target_selection: str = "Container", 
                                 interactive: bool = False, mean_miss_distance: float = None):
-    """Create 3D trajectory plot for terminal engagement segments.
+    """Create 3D trajectory plot for terminal engagement segments using GPS coordinates.
     
     For single file: Shows one trajectory with dive/impact markers.
     For batch: Shows all trajectories with mean miss distance circle around target.
@@ -64,47 +64,54 @@ def plot_3d_terminal_engagement(trajectory_data: list, out_dir: Path,
     colors = plt.cm.tab10(np.linspace(0, 1, len(trajectory_data)))
     is_batch = len(trajectory_data) > 1
     
-    # Get reference origin from first trajectory's GPS home position
+    # Get reference origin from first trajectory's GPS data
     first_ulog = trajectory_data[0]['ulog']
+    first_mask = trajectory_data[0]['mask']
+    first_data = trajectory_data[0]['data']
+    
     try:
-        # Get GPS home position (first GPS fix) as reference origin
+        # Get GPS data from first trajectory
         gps_data = first_ulog.get_dataset("vehicle_gps_position").data
         valid_fix = gps_data['fix_type'] > 2
-        if np.any(valid_fix):
-            ref_lat = gps_data['lat'][valid_fix][0] / 1e7
-            ref_lon = gps_data['lon'][valid_fix][0] / 1e7
-        else:
-            print("Warning: No valid GPS fix found, using default reference")
-            ref_lat = 43.2298306
-            ref_lon = -75.4014135
+        
+        if not np.any(valid_fix):
+            print("Warning: No valid GPS fix found in first trajectory")
+            return
+        
+        # Get GPS timestamps and find first point in masked region
+        gps_timestamps = gps_data['timestamp'][valid_fix]
+        first_mask_idx = np.where(first_mask)[0][0]
+        first_timestamp = first_data['timestamp_us'][first_mask_idx]
+        
+        # Find corresponding GPS index
+        ref_gps_idx = np.searchsorted(gps_timestamps, first_timestamp)
+        ref_gps_idx = np.clip(ref_gps_idx, 0, len(gps_timestamps) - 1)
+        
+        # Use this as reference origin
+        ref_lat = gps_data['lat'][valid_fix][ref_gps_idx] / 1e7
+        ref_lon = gps_data['lon'][valid_fix][ref_gps_idx] / 1e7
+        
     except Exception as e:
         print(f"Warning: Could not get GPS reference: {e}")
-        ref_lat = 43.2298306
-        ref_lon = -75.4014135
+        return
     
-    # Convert target GPS to local NED coordinates relative to reference
-    def gps_to_local_ned(lat, lon, ref_lat, ref_lon):
-        """Convert GPS coordinates to local NED (North-East-Down) relative to reference."""
+    # Convert GPS to relative meters from reference point
+    def gps_to_meters(lat, lon, ref_lat, ref_lon):
+        """Convert GPS coordinates to meters relative to reference point."""
         import math
         R = 6371000  # Earth radius in meters
         
-        # Convert to radians
-        lat_rad = math.radians(lat)
-        lon_rad = math.radians(lon)
-        ref_lat_rad = math.radians(ref_lat)
-        ref_lon_rad = math.radians(ref_lon)
-        
-        # Calculate North and East offsets
+        # Simple flat-earth approximation (good for small distances)
         dlat = lat - ref_lat
         dlon = lon - ref_lon
         
-        north = dlat * (math.pi / 180.0) * R
-        east = dlon * (math.pi / 180.0) * R * math.cos(ref_lat_rad)
+        y = dlat * (math.pi / 180.0) * R  # North (meters)
+        x = dlon * (math.pi / 180.0) * R * math.cos(math.radians(ref_lat))  # East (meters)
         
-        return north, east
+        return x, y
     
-    # Convert target to local coordinates
-    target_north, target_east = gps_to_local_ned(
+    # Convert target to relative coordinates
+    target_x, target_y = gps_to_meters(
         all_targets[target_selection]['lat'],
         all_targets[target_selection]['lon'],
         ref_lat, ref_lon
@@ -112,6 +119,7 @@ def plot_3d_terminal_engagement(trajectory_data: list, out_dir: Path,
     
     # Process each trajectory
     for i, traj_info in enumerate(trajectory_data):
+        ulog = traj_info['ulog']
         data = traj_info['data']
         mask = traj_info['mask']
         engagement_masks = traj_info['engagement_masks']
@@ -120,48 +128,72 @@ def plot_3d_terminal_engagement(trajectory_data: list, out_dir: Path,
         if not np.any(mask):
             continue
         
-        # Get indices for dive and impact
-        mask_indices = np.where(mask)[0]
-        first_dive_idx = engagement_masks.get('first_dive_idx', mask_indices[0])
-        first_impact_idx = engagement_masks.get('first_impact_idx', mask_indices[-1])
-        
-        # Get reference origin from first trajectory
-        if i == 0:
-            # Use first trajectory's start as plotting origin
-            origin_x = data["x"][mask][0]
-            origin_y = data["y"][mask][0]
+        try:
+            # Get GPS data for this trajectory
+            gps_data = ulog.get_dataset("vehicle_gps_position").data
+            valid_fix = gps_data['fix_type'] > 2
             
-            # Target position in NED is (North, East) which maps to (x, y) in local frame
-            target_x = target_north
-            target_y = target_east
-        
-        # Plot trajectory relative to first trajectory's origin
-        trajectory_x = data["x"][mask] - origin_x
-        trajectory_y = data["y"][mask] - origin_y
-        trajectory_z = data["altitude_agl"][mask]
-        
-        label = filename if is_batch else 'Terminal Engagement'
-        color = colors[i] if is_batch else 'b'
-        linewidth = 1.5 if is_batch else 2
-        
-        ax.plot(trajectory_x, trajectory_y, trajectory_z, color=color, linewidth=linewidth, 
-               alpha=0.7 if is_batch else 1.0, label=label)
-        
-        # Find positions within masked data
-        dive_pos_in_mask = np.where(mask_indices == first_dive_idx)[0]
-        impact_pos_in_mask = np.where(mask_indices == first_impact_idx)[0]
-        
-        # Mark dive start
-        if len(dive_pos_in_mask) > 0:
-            dive_idx = dive_pos_in_mask[0]
-            ax.scatter(trajectory_x[dive_idx], trajectory_y[dive_idx], trajectory_z[dive_idx], 
-                      color=color, s=100, marker='^', edgecolors='orange', linewidth=2, zorder=6)
-        
-        # Mark impact point
-        if len(impact_pos_in_mask) > 0:
-            impact_idx = impact_pos_in_mask[0]
-            ax.scatter(trajectory_x[impact_idx], trajectory_y[impact_idx], trajectory_z[impact_idx], 
-                      color=color, s=120, marker='X', edgecolors='red', linewidth=2, zorder=6)
+            if not np.any(valid_fix):
+                print(f"  Warning: No valid GPS fix in {filename}")
+                continue
+            
+            gps_lat = gps_data['lat'][valid_fix] / 1e7
+            gps_lon = gps_data['lon'][valid_fix] / 1e7
+            gps_timestamps = gps_data['timestamp'][valid_fix]
+            
+            # Get masked indices
+            mask_indices = np.where(mask)[0]
+            first_dive_idx = engagement_masks.get('first_dive_idx', mask_indices[0])
+            first_impact_idx = engagement_masks.get('first_impact_idx', mask_indices[-1])
+            
+            # Convert GPS coordinates to relative meters for masked segment
+            trajectory_x = []
+            trajectory_y = []
+            trajectory_z = []
+            
+            for idx in mask_indices:
+                timestamp = data['timestamp_us'][idx]
+                gps_idx = np.searchsorted(gps_timestamps, timestamp)
+                gps_idx = np.clip(gps_idx, 0, len(gps_timestamps) - 1)
+                
+                lat = gps_lat[gps_idx]
+                lon = gps_lon[gps_idx]
+                x, y = gps_to_meters(lat, lon, ref_lat, ref_lon)
+                
+                trajectory_x.append(x)
+                trajectory_y.append(y)
+                trajectory_z.append(data["altitude_agl"][idx])
+            
+            trajectory_x = np.array(trajectory_x)
+            trajectory_y = np.array(trajectory_y)
+            trajectory_z = np.array(trajectory_z)
+            
+            label = filename if is_batch else 'Terminal Engagement'
+            color = colors[i] if is_batch else 'b'
+            linewidth = 1.5 if is_batch else 2
+            
+            ax.plot(trajectory_x, trajectory_y, trajectory_z, color=color, linewidth=linewidth, 
+                   alpha=0.7 if is_batch else 1.0, label=label)
+            
+            # Find positions within masked data
+            dive_pos_in_mask = np.where(mask_indices == first_dive_idx)[0]
+            impact_pos_in_mask = np.where(mask_indices == first_impact_idx)[0]
+            
+            # Mark dive start
+            if len(dive_pos_in_mask) > 0:
+                dive_idx = dive_pos_in_mask[0]
+                ax.scatter(trajectory_x[dive_idx], trajectory_y[dive_idx], trajectory_z[dive_idx], 
+                          color=color, s=100, marker='^', edgecolors='orange', linewidth=2, zorder=6)
+            
+            # Mark impact point
+            if len(impact_pos_in_mask) > 0:
+                impact_idx = impact_pos_in_mask[0]
+                ax.scatter(trajectory_x[impact_idx], trajectory_y[impact_idx], trajectory_z[impact_idx], 
+                          color=color, s=120, marker='X', edgecolors='red', linewidth=2, zorder=6)
+                
+        except Exception as e:
+            print(f"  Error plotting trajectory for {filename}: {e}")
+            continue
     
     # Plot target (altitude is relative to ground, so z=0)
     for target_name, target_info in target_display.items():

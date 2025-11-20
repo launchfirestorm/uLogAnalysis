@@ -778,7 +778,6 @@ def main():
     # Compute terminal engagement mask
     engagement_masks = compute_engagement_masks(data, args.pitch_threshold, args.accel_threshold, args.alt_threshold)
     mask = engagement_masks['terminal_engagement_mask']
-    selected = int(np.count_nonzero(mask))
 
     # Generate plots and analysis
     trajectory_data_3d = [{
