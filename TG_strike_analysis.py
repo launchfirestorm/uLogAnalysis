@@ -465,8 +465,8 @@ def calculate_miss_distances(ulog, data: Dict[str, np.ndarray], mask: np.ndarray
     """
     # Define target locations (hardcoded) - altitudes are AGL (ground level)
     all_targets = {
-        'Container': {'lat': 43.2222722, 'lon': -75.3903593, 'alt_agl': 0.0},
-        'Van': {'lat': 43.2221788, 'lon': -75.3905151, 'alt_agl': 0.0}
+        'Container': {'lat': 43.2222722, 'lon': -75.3903593, 'alt_agl': 2.0},
+        'Van': {'lat': 43.2221788, 'lon': -75.3905151, 'alt_agl': 1.0}
     }
     
     # Filter targets based on selection

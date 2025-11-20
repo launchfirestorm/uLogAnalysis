@@ -52,8 +52,8 @@ def plot_3d_terminal_engagement(trajectory_data: list, out_dir: Path,
     
     # Define target locations in GPS coordinates
     all_targets = {
-        'Container': {'lat': 43.2222722, 'lon': -75.3903593, 'alt_agl': 0.0, 'color': 'red', 'marker': 's'},
-        'Van': {'lat': 43.2221788, 'lon': -75.3905151, 'alt_agl': 0.0, 'color': 'green', 'marker': 'o'}
+        'Container': {'lat': 43.2222722, 'lon': -75.3903593, 'alt_agl': 2.0, 'color': 'red', 'marker': 's'},
+        'Van': {'lat': 43.2221788, 'lon': -75.3905151, 'alt_agl': 1.0, 'color': 'green', 'marker': 'o'}
     }
     
     target_display = {target_selection: all_targets[target_selection]}
@@ -146,6 +146,9 @@ def plot_3d_terminal_engagement(trajectory_data: list, out_dir: Path,
             first_dive_idx = engagement_masks.get('first_dive_idx', mask_indices[0])
             first_impact_idx = engagement_masks.get('first_impact_idx', mask_indices[-1])
             
+            # Get altitude offset from very first point in trajectory (ground level reference)
+            altitude_offset = data["altitude_agl"][0]
+            
             # Convert GPS coordinates to relative meters for masked segment
             trajectory_x = []
             trajectory_y = []
@@ -162,7 +165,7 @@ def plot_3d_terminal_engagement(trajectory_data: list, out_dir: Path,
                 
                 trajectory_x.append(x)
                 trajectory_y.append(y)
-                trajectory_z.append(data["altitude_agl"][idx])
+                trajectory_z.append(data["altitude_agl"][idx] - altitude_offset)
             
             trajectory_x = np.array(trajectory_x)
             trajectory_y = np.array(trajectory_y)
@@ -418,8 +421,14 @@ def gps_trajectory_plot(trajectory_data: list, output_dir: Path, target_selectio
                 gps_alt_msl = gps_data['alt'][valid_fix] / 1e3
                 gps_timestamps = gps_data['timestamp'][valid_fix]
                 
-                # Convert to AGL using local position reference
-                gps_alt = gps_alt_msl - np.mean(gps_alt_msl) + np.mean(data["altitude_agl"])
+                # Convert to AGL using very first altitude point as ground reference
+                # Find GPS altitude at very first timestamp in data
+                first_timestamp = data['timestamp_us'][0]
+                first_gps_idx = np.searchsorted(gps_timestamps, first_timestamp)
+                first_gps_idx = np.clip(first_gps_idx, 0, len(gps_timestamps) - 1)
+                altitude_offset = gps_alt_msl[first_gps_idx]
+                
+                gps_alt = gps_alt_msl - altitude_offset
                 
                 # Get time array for altitude plot
                 gps_t = (gps_timestamps - gps_timestamps[0]) * 1e-6
