@@ -558,6 +558,7 @@ def calculate_miss_distances(ulog, data: Dict[str, np.ndarray], mask: np.ndarray
                     impact_lat = gps_data['lat'][valid_fix][impact_gps_idx] / 1e7
                     impact_lon = gps_data['lon'][valid_fix][impact_gps_idx] / 1e7
                     impact_alt_agl = data["altitude_agl"][first_impact_idx]  # Use AGL from local position
+                    impact_gps_alt_msl = gps_data['alt'][valid_fix][impact_gps_idx] / 1000.0  # GPS altitude MSL in meters
                     
                     # Haversine distance calculation helper
                     def haversine_distance(lat1, lon1, lat2, lon2):
@@ -582,29 +583,45 @@ def calculate_miss_distances(ulog, data: Dict[str, np.ndarray], mask: np.ndarray
                     # Interpolate GPS coordinates for entire trajectory
                     trajectory_gps_lat = np.interp(trajectory_timestamps, gps_timestamps, gps_data['lat'][valid_fix]) / 1e7
                     trajectory_gps_lon = np.interp(trajectory_timestamps, gps_timestamps, gps_data['lon'][valid_fix]) / 1e7
-                    trajectory_alt_agl = data["altitude_agl"][mask]
+                    trajectory_alt_agl = data["altitude_agl"][mask]  # Local AGL (from NED z)
+                    trajectory_gps_alt_msl = np.interp(trajectory_timestamps, gps_timestamps, gps_data['alt'][valid_fix]) / 1000.0  # GPS altitude MSL in meters
+                    
+                    # For simulated flat world: offset GPS altitudes to AGL using first trajectory point as reference
+                    # This matches the approach used in gps_trajectory_plot
+                    first_trajectory_timestamp = data["timestamp_us"][0]
+                    first_gps_idx = np.searchsorted(gps_timestamps, first_trajectory_timestamp)
+                    first_gps_idx = np.clip(first_gps_idx, 0, len(gps_timestamps) - 1)
+                    gps_altitude_offset = gps_data['alt'][valid_fix][first_gps_idx] / 1000.0
+                    
+                    # Convert trajectory GPS altitudes to AGL by subtracting initial altitude
+                    trajectory_gps_alt_agl = trajectory_gps_alt_msl - gps_altitude_offset
                     
                     for target_name, target_info in targets.items():
+                        # For simulated flat world: target altitude is simply its AGL value (no offset needed since world is flat)
+                        target_alt_agl = target_info['alt_agl']
+                        
                         # Impact point miss distance (original metric)
+                        # Uses local AGL which assumes same ground elevation - works well for flat simulated world
                         impact_ground_distance = haversine_distance(impact_lat, impact_lon, 
                                                            target_info['lat'], target_info['lon'])
-                        impact_alt_diff = impact_alt_agl - target_info['alt_agl']
+                        impact_alt_diff = impact_alt_agl - target_alt_agl
                         impact_total_distance = math.sqrt(impact_ground_distance**2 + impact_alt_diff**2)
                         
                         # Closest Point of Approach (CPA) - true miss distance
-                        # Calculate distance from target to every point in trajectory
+                        # Use GPS altitudes converted to AGL (with same offset as trajectory plot)
                         ground_distances = np.array([
                             haversine_distance(lat, lon, target_info['lat'], target_info['lon'])
                             for lat, lon in zip(trajectory_gps_lat, trajectory_gps_lon)
                         ])
-                        alt_diffs = trajectory_alt_agl - target_info['alt_agl']
-                        total_distances = np.sqrt(ground_distances**2 + alt_diffs**2)
+                        # Calculate altitude differences using GPS AGL altitudes (flat world assumption)
+                        alt_diffs_agl = trajectory_gps_alt_agl - target_alt_agl
+                        total_distances = np.sqrt(ground_distances**2 + alt_diffs_agl**2)
                         
                         # Find closest approach
                         cpa_idx = np.argmin(total_distances)
                         cpa_ground = ground_distances[cpa_idx]
                         cpa_total = total_distances[cpa_idx]
-                        cpa_alt_diff = alt_diffs[cpa_idx]
+                        cpa_alt_diff = alt_diffs_agl[cpa_idx]
                         cpa_timestamp_us = trajectory_timestamps[cpa_idx]
                         cpa_time_s = (cpa_timestamp_us - data["timestamp_us"][0]) * 1e-6
                         
@@ -627,7 +644,7 @@ def calculate_miss_distances(ulog, data: Dict[str, np.ndarray], mask: np.ndarray
                             'cpa_time_s': cpa_time_s,
                             'cpa_lat': trajectory_gps_lat[cpa_idx],
                             'cpa_lon': trajectory_gps_lon[cpa_idx],
-                            'cpa_alt_agl': trajectory_alt_agl[cpa_idx]
+                            'cpa_alt_agl': trajectory_gps_alt_agl[cpa_idx]  # Use GPS-based AGL altitude
                         }
                         
             except Exception as e:

@@ -989,8 +989,7 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
     
     ax1.set_xlabel('Miss Distance [m]', fontsize=12)
     ax1.set_ylabel('Number of Cases', fontsize=12)
-    ax1.set_title(f'Impact Point Distance Distribution (Ground) - {stat["target"]} Target\\n'
-                  f'N={stat["count"]}, Mean={stat["impact_ground_mean"]:.1f}m, Std={stat["impact_ground_std"]:.1f}m', 
+    ax1.set_title(f'Impact Point Miss Distance Distribution ', 
                   fontsize=13, fontweight='bold')
     ax1.grid(True, alpha=0.3, axis='y')
     ax1.legend(fontsize=10)
@@ -1017,8 +1016,7 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
     
     ax2.set_xlabel('True Miss Distance [m]', fontsize=12)
     ax2.set_ylabel('Number of Cases', fontsize=12)
-    ax2.set_title(f'Closest Point of Approach (CPA) Distribution (3D Total) - {stat["target"]} Target\\n'
-                  f'N={stat["count"]}, Mean={stat["cpa_total_mean"]:.1f}m, Std={stat["cpa_total_std"]:.1f}m', 
+    ax2.set_title(f'Closest Point of Approach (CPA) Miss Distance Distribution', 
                   fontsize=13, fontweight='bold')
     ax2.grid(True, alpha=0.3, axis='y')
     ax2.legend(fontsize=10)
