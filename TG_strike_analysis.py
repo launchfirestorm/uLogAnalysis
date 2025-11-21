@@ -863,6 +863,79 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     
     # Create miss distance histogram plots
     plot_miss_distance_histograms(stats_output, output_dir, target_selection, interactive_3d)
+    
+    # Combine all PNG plots into a single PDF
+    combine_plots_to_pdf(output_dir, target_selection, len(trajectory_data) > 1)
+
+
+def combine_plots_to_pdf(output_dir: Path, target_selection: str, is_batch: bool = True):
+    """Combine all PNG plots into a single PDF file.
+    
+    Args:
+        output_dir: Directory containing PNG files
+        target_selection: Target name for filename
+        is_batch: Whether this is batch processing (affects which files to include)
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        print("PIL/Pillow not available. Install with: pip install Pillow")
+        print("Skipping PDF generation.")
+        return
+    
+    target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
+    
+    # Define the order of plots to include in PDF
+    if is_batch:
+        plot_files = [
+            f"combined_3d_terminal_engagement{target_suffix}.png",
+            f"combined_gps_trajectories{target_suffix}.png",
+            f"combined_roll_pitch{target_suffix}.png",
+            f"combined_accelerometer_method1{target_suffix}.png",
+            f"combined_accelerometer_method2{target_suffix}.png",
+            f"miss_distance_histograms{target_suffix}.png"
+        ]
+    else:
+        plot_files = [
+            f"3d_terminal_engagement{target_suffix}.png",
+            f"gps_trajectories{target_suffix}.png",
+            f"roll_pitch_timeseries{target_suffix}.png",
+            f"accelerometer_method1{target_suffix}.png",
+            f"accelerometer_method2{target_suffix}.png"
+        ]
+    
+    # Collect existing plot files
+    images = []
+    for plot_file in plot_files:
+        plot_path = output_dir / plot_file
+        if plot_path.exists():
+            try:
+                img = Image.open(plot_path)
+                # Convert to RGB if necessary (PDF requires RGB)
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                images.append(img)
+            except Exception as e:
+                print(f"Warning: Could not open {plot_file}: {e}")
+    
+    if not images:
+        print("No PNG files found to combine into PDF.")
+        return
+    
+    # Save as PDF
+    pdf_filename = f"combined_analysis{target_suffix}.pdf" if is_batch else f"analysis{target_suffix}.pdf"
+    pdf_path = output_dir / pdf_filename
+    
+    try:
+        # Save first image and append the rest
+        images[0].save(pdf_path, "PDF", resolution=100.0, save_all=True, append_images=images[1:])
+        print(f"\nCombined all plots into PDF: {pdf_path}")
+    except Exception as e:
+        print(f"Error creating PDF: {e}")
+    finally:
+        # Close all images
+        for img in images:
+            img.close()
 
 
 def main():
@@ -938,6 +1011,9 @@ def main():
 
     if args.save_csv:
         save_filtered_csv(data, mask, args.output / "position_attitude_filtered.csv")
+    
+    # Combine all PNG plots into a single PDF
+    combine_plots_to_pdf(args.output, args.target, is_batch=False)
 
 
 
