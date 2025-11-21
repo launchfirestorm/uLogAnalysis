@@ -929,3 +929,119 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
         print(f"Saved Method 2 derivative plot: {plot_path}")
 
 
+def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_selection: str, interactive: bool = False):
+    """Create histogram plots for miss distance distributions.
+    
+    Creates two histogram subplots:
+    1. Impact Point Distance (ground) - Original metric
+    2. Closest Point of Approach (CPA) Total (3D) - True miss distance
+    
+    Args:
+        stats_output: List of statistics dictionaries from process_multiple_logs
+        output_dir: Output directory for plots
+        target_selection: Target name for filename
+        interactive: Whether to show interactive plot
+    """
+    if not matplotlib_available:
+        print("matplotlib not available, skipping miss distance histogram plot.")
+        return
+        
+    try:
+        from matplotlib import pyplot as plt
+    except ImportError:
+        print("matplotlib not available, skipping miss distance histogram plot.")
+        return
+    
+    if not stats_output or len(stats_output) == 0:
+        print("No statistics available for histogram plotting.")
+        return
+    
+    # Extract data from first target (since we typically analyze one target at a time)
+    stat = stats_output[0]
+    distance_dicts = stat['distance_dicts']
+    
+    if len(distance_dicts) < 2:
+        print("Need at least 2 data points for histogram plotting.")
+        return
+    
+    # Extract arrays for each metric
+    impact_ground_array = np.array([d['impact_ground'] for d in distance_dicts])
+    impact_total_array = np.array([d['impact_total'] for d in distance_dicts])
+    cpa_ground_array = np.array([d['cpa_ground'] for d in distance_dicts])
+    cpa_total_array = np.array([d['cpa_total'] for d in distance_dicts])
+    
+    # Create figure with 2 subplots (2 rows)
+    fig, axes = plt.subplots(2, 1, figsize=(10, 10))
+    
+    # Define bin edges for histograms (0-20m range with 2m bins)
+    bin_edges = np.arange(0, 22, 2)
+    
+    # Subplot 1: Impact Point Distance (ground)
+    ax1 = axes[0]
+    counts1, bins1, patches1 = ax1.hist(impact_ground_array, bins=bin_edges, 
+                                         edgecolor='black', alpha=0.7, color='steelblue')
+    ax1.axvline(stat['impact_ground_mean'], color='red', linestyle='--', linewidth=2, 
+                label=f"Mean = {stat['impact_ground_mean']:.1f}m")
+    ax1.axvline(stat['impact_ground_mean'] + stat['impact_ground_std'], 
+                color='orange', linestyle=':', linewidth=2, label=f"±1σ = {stat['impact_ground_std']:.1f}m")
+    ax1.axvline(stat['impact_ground_mean'] - stat['impact_ground_std'], 
+                color='orange', linestyle=':', linewidth=2)
+    
+    ax1.set_xlabel('Miss Distance [m]', fontsize=12)
+    ax1.set_ylabel('Number of Cases', fontsize=12)
+    ax1.set_title(f'Impact Point Distance Distribution (Ground) - {stat["target"]} Target\\n'
+                  f'N={stat["count"]}, Mean={stat["impact_ground_mean"]:.1f}m, Std={stat["impact_ground_std"]:.1f}m', 
+                  fontsize=13, fontweight='bold')
+    ax1.grid(True, alpha=0.3, axis='y')
+    ax1.legend(fontsize=10)
+    ax1.set_xlim([0, 20])
+    
+    # Add count labels on bars
+    for i, (count, patch) in enumerate(zip(counts1, patches1)):
+        if count > 0:
+            height = patch.get_height()
+            ax1.text(patch.get_x() + patch.get_width()/2., height,
+                    f'{int(count)}',
+                    ha='center', va='bottom', fontsize=10, fontweight='bold')
+    
+    # Subplot 2: Closest Point of Approach (CPA) Total (3D) - True Miss Distance
+    ax2 = axes[1]
+    counts2, bins2, patches2 = ax2.hist(cpa_total_array, bins=bin_edges, 
+                                         edgecolor='black', alpha=0.7, color='forestgreen')
+    ax2.axvline(stat['cpa_total_mean'], color='red', linestyle='--', linewidth=2, 
+                label=f"Mean = {stat['cpa_total_mean']:.1f}m")
+    ax2.axvline(stat['cpa_total_mean'] + stat['cpa_total_std'], 
+                color='orange', linestyle=':', linewidth=2, label=f"±1σ = {stat['cpa_total_std']:.1f}m")
+    ax2.axvline(stat['cpa_total_mean'] - stat['cpa_total_std'], 
+                color='orange', linestyle=':', linewidth=2)
+    
+    ax2.set_xlabel('True Miss Distance [m]', fontsize=12)
+    ax2.set_ylabel('Number of Cases', fontsize=12)
+    ax2.set_title(f'Closest Point of Approach (CPA) Distribution (3D Total) - {stat["target"]} Target\\n'
+                  f'N={stat["count"]}, Mean={stat["cpa_total_mean"]:.1f}m, Std={stat["cpa_total_std"]:.1f}m', 
+                  fontsize=13, fontweight='bold')
+    ax2.grid(True, alpha=0.3, axis='y')
+    ax2.legend(fontsize=10)
+    ax2.set_xlim([0, 20])
+    
+    # Add count labels on bars
+    for i, (count, patch) in enumerate(zip(counts2, patches2)):
+        if count > 0:
+            height = patch.get_height()
+            ax2.text(patch.get_x() + patch.get_width()/2., height,
+                    f'{int(count)}',
+                    ha='center', va='bottom', fontsize=10, fontweight='bold')
+    
+    plt.tight_layout()
+    
+    if interactive:
+        plt.show()
+        print("Showing interactive miss distance histogram (close window to continue)")
+    else:
+        target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
+        plot_path = output_dir / f"miss_distance_histograms{target_suffix}.png"
+        plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"Saved miss distance histogram: {plot_path}")
+
+

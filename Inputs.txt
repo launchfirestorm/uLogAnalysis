@@ -3,3 +3,5 @@ conda activate python38_flight_review_env ; python tg_strike_analysis.py --ulog 
 
 conda activate python38_flight_review_env ; python tg_strike_analysis.py --logs-dir "Logs\Realflight\TG_Sample_Set" --output "Outputs/Test_Cases"  --pitch-threshold -4.0 --accel-threshold 10.0 --target Van
 
+
+conda activate python38_flight_review_env ; python tg_strike_analysis.py --logs-dir "Logs\Realflight\TG_Sample_Set" --output "Outputs/Test_Cases"   --target Van --interactive-3d

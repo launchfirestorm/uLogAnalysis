@@ -17,7 +17,8 @@ from tg_plotting import (
     plot_3d_terminal_engagement,
     plot_roll_pitch, 
     gps_trajectory_plot,
-    plot_accelerometer_impacts
+    plot_accelerometer_impacts,
+    plot_miss_distance_histograms
 )
 from tg_utils import (
     quaternion_to_euler as quaternion_to_euler, 
@@ -505,11 +506,18 @@ def calculate_miss_distances(ulog, data: Dict[str, np.ndarray], mask: np.ndarray
                            engagement_masks: Dict = None, pitch_threshold: float = -4.0, 
                            accel_threshold: float = 15.0, deriv_threshold: float = 2.0, alt_threshold: float = 5.0,
                            target_selection: str = "both") -> Dict[str, Dict[str, float]]:
-    """Calculate miss distances for targets without plotting.
+    """Calculate miss distances for targets including impact point and closest point of approach (CPA).
     
     Returns:
-        Dictionary with target names as keys and miss distance info as values
+        Dictionary with target names as keys and miss distance info as values.
+        Each target includes:
+        - 'impact_ground': ground distance at impact point
+        - 'impact_total': 3D distance at impact point
+        - 'cpa_ground': ground distance at closest point of approach
+        - 'cpa_total': 3D distance at closest point of approach (true miss distance)
     """
+    import math
+    
     # Define target locations (hardcoded) - altitudes are AGL (ground level)
     all_targets = {
         'Container': {'lat': 43.2222722, 'lon': -75.3903593, 'alt_agl': 2.0},
@@ -551,9 +559,8 @@ def calculate_miss_distances(ulog, data: Dict[str, np.ndarray], mask: np.ndarray
                     impact_lon = gps_data['lon'][valid_fix][impact_gps_idx] / 1e7
                     impact_alt_agl = data["altitude_agl"][first_impact_idx]  # Use AGL from local position
                     
-                    # Calculate miss distances using Haversine formula
+                    # Haversine distance calculation helper
                     def haversine_distance(lat1, lon1, lat2, lon2):
-                        import math
                         R = 6371000  # Earth's radius in meters
                         
                         lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
@@ -568,19 +575,59 @@ def calculate_miss_distances(ulog, data: Dict[str, np.ndarray], mask: np.ndarray
                         
                         return R * c
                     
+                    # Get GPS data for entire trajectory during terminal engagement
+                    mask_indices = np.where(mask)[0]
+                    trajectory_timestamps = data["timestamp_us"][mask]
+                    
+                    # Interpolate GPS coordinates for entire trajectory
+                    trajectory_gps_lat = np.interp(trajectory_timestamps, gps_timestamps, gps_data['lat'][valid_fix]) / 1e7
+                    trajectory_gps_lon = np.interp(trajectory_timestamps, gps_timestamps, gps_data['lon'][valid_fix]) / 1e7
+                    trajectory_alt_agl = data["altitude_agl"][mask]
+                    
                     for target_name, target_info in targets.items():
-                        ground_distance = haversine_distance(impact_lat, impact_lon, 
+                        # Impact point miss distance (original metric)
+                        impact_ground_distance = haversine_distance(impact_lat, impact_lon, 
                                                            target_info['lat'], target_info['lon'])
-                        alt_diff = impact_alt_agl - target_info['alt_agl']
-                        total_distance = math.sqrt(ground_distance**2 + alt_diff**2)
+                        impact_alt_diff = impact_alt_agl - target_info['alt_agl']
+                        impact_total_distance = math.sqrt(impact_ground_distance**2 + impact_alt_diff**2)
+                        
+                        # Closest Point of Approach (CPA) - true miss distance
+                        # Calculate distance from target to every point in trajectory
+                        ground_distances = np.array([
+                            haversine_distance(lat, lon, target_info['lat'], target_info['lon'])
+                            for lat, lon in zip(trajectory_gps_lat, trajectory_gps_lon)
+                        ])
+                        alt_diffs = trajectory_alt_agl - target_info['alt_agl']
+                        total_distances = np.sqrt(ground_distances**2 + alt_diffs**2)
+                        
+                        # Find closest approach
+                        cpa_idx = np.argmin(total_distances)
+                        cpa_ground = ground_distances[cpa_idx]
+                        cpa_total = total_distances[cpa_idx]
+                        cpa_alt_diff = alt_diffs[cpa_idx]
+                        cpa_timestamp_us = trajectory_timestamps[cpa_idx]
+                        cpa_time_s = (cpa_timestamp_us - data["timestamp_us"][0]) * 1e-6
                         
                         miss_distances[target_name] = {
-                            'ground': ground_distance,
-                            'total': total_distance,
-                            'altitude_diff': alt_diff,
+                            # Legacy impact point metrics (for backwards compatibility)
+                            'ground': impact_ground_distance,
+                            'total': impact_total_distance,
+                            'altitude_diff': impact_alt_diff,
                             'impact_lat': impact_lat,
                             'impact_lon': impact_lon,
-                            'impact_alt_agl': impact_alt_agl
+                            'impact_alt_agl': impact_alt_agl,
+                            # New metrics with explicit names
+                            'impact_ground': impact_ground_distance,
+                            'impact_total': impact_total_distance,
+                            'impact_alt_diff': impact_alt_diff,
+                            # CPA metrics (true miss distance)
+                            'cpa_ground': cpa_ground,
+                            'cpa_total': cpa_total,
+                            'cpa_alt_diff': cpa_alt_diff,
+                            'cpa_time_s': cpa_time_s,
+                            'cpa_lat': trajectory_gps_lat[cpa_idx],
+                            'cpa_lon': trajectory_gps_lon[cpa_idx],
+                            'cpa_alt_agl': trajectory_alt_agl[cpa_idx]
                         }
                         
             except Exception as e:
@@ -648,9 +695,10 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
             if miss_distances:
                 print(f"  Terminal engagement found:")
                 for target_name, distances in miss_distances.items():
-                    ground_dist = distances['ground']
-                    print(f"    {target_name}: {ground_dist:.1f}m miss")
-                    all_miss_distances[target_name].append(ground_dist)
+                    impact_dist = distances['impact_ground']
+                    cpa_dist = distances['cpa_total']
+                    print(f"    {target_name}: Impact={impact_dist:.1f}m, CPA={cpa_dist:.1f}m (true miss)")
+                    all_miss_distances[target_name].append(distances)
                 
                 log_results.append({
                     'file': log_file.name,
@@ -677,29 +725,35 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     print(f"\n=== Miss Distance Statistics (Target: {target_selection}) ===")
     
     stats_output = []
-    for target_name, distances in all_miss_distances.items():
-        if distances:
-            distances_array = np.array(distances)
-            mean_dist = np.mean(distances_array)
-            std_dist = np.std(distances_array)
-            min_dist = np.min(distances_array)
-            max_dist = np.max(distances_array)
+    for target_name, distance_dicts in all_miss_distances.items():
+        if distance_dicts:
+            # Extract arrays for each metric
+            impact_ground_array = np.array([d['impact_ground'] for d in distance_dicts])
+            impact_total_array = np.array([d['impact_total'] for d in distance_dicts])
+            cpa_ground_array = np.array([d['cpa_ground'] for d in distance_dicts])
+            cpa_total_array = np.array([d['cpa_total'] for d in distance_dicts])
             
             print(f"\n{target_name} Target:")
-            print(f"  Successful engagements: {len(distances)}")
-            print(f"  Mean miss distance: {mean_dist:.1f}m")
-            print(f"  Standard deviation: {std_dist:.1f}m")
-            print(f"  Minimum miss: {min_dist:.1f}m")
-            print(f"  Maximum miss: {max_dist:.1f}m")
+            print(f"  Successful engagements: {len(distance_dicts)}")
+            print(f"\n  Impact Point Distance (ground):")
+            print(f"    Mean: {np.mean(impact_ground_array):.1f}m, Std: {np.std(impact_ground_array):.1f}m")
+            print(f"    Range: {np.min(impact_ground_array):.1f}m - {np.max(impact_ground_array):.1f}m")
+            print(f"\n  Closest Point of Approach (CPA) - True Miss Distance (3D):")
+            print(f"    Mean: {np.mean(cpa_total_array):.1f}m, Std: {np.std(cpa_total_array):.1f}m")
+            print(f"    Range: {np.min(cpa_total_array):.1f}m - {np.max(cpa_total_array):.1f}m")
             
             stats_output.append({
                 'target': target_name,
-                'count': len(distances),
-                'mean': mean_dist,
-                'std': std_dist,
-                'min': min_dist,
-                'max': max_dist,
-                'distances': distances
+                'count': len(distance_dicts),
+                'impact_ground_mean': np.mean(impact_ground_array),
+                'impact_ground_std': np.std(impact_ground_array),
+                'impact_ground_min': np.min(impact_ground_array),
+                'impact_ground_max': np.max(impact_ground_array),
+                'cpa_total_mean': np.mean(cpa_total_array),
+                'cpa_total_std': np.std(cpa_total_array),
+                'cpa_total_min': np.min(cpa_total_array),
+                'cpa_total_max': np.max(cpa_total_array),
+                'distance_dicts': distance_dicts
             })
     
     # Save detailed results to CSV
@@ -713,39 +767,47 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
         import csv
         writer = csv.writer(f)
         
-        # Dynamic header based on target selection
+        # Dynamic header based on target selection - now includes both impact and CPA metrics
         header = ['File', 'Status']
         if target_selection == "Container":
-            header.append('Container_Miss_m')
+            header.extend(['Container_Impact_Ground_m', 'Container_CPA_Total_m'])
         else:  # Van
-            header.append('Van_Miss_m')
-        header.extend(['Impact_Lat', 'Impact_Lon', 'Impact_Alt_AGL_m'])
+            header.extend(['Van_Impact_Ground_m', 'Van_CPA_Total_m'])
+        header.extend(['Impact_Lat', 'Impact_Lon', 'Impact_Alt_AGL_m', 'CPA_Lat', 'CPA_Lon', 'CPA_Alt_AGL_m', 'CPA_Time_s'])
         writer.writerow(header)
         
         for result in log_results:
             row = [result['file'], result['status']]
             if result['miss_distances']:
                 if target_selection == "both":
-                    container_miss = result['miss_distances'].get('Container', {}).get('ground', '')
-                    greenvan_miss = result['miss_distances'].get('Van', {}).get('ground', '')
-                    row.extend([container_miss, greenvan_miss])
+                    container_impact = result['miss_distances'].get('Container', {}).get('impact_ground', '')
+                    container_cpa = result['miss_distances'].get('Container', {}).get('cpa_total', '')
+                    greenvan_impact = result['miss_distances'].get('Van', {}).get('impact_ground', '')
+                    greenvan_cpa = result['miss_distances'].get('Van', {}).get('cpa_total', '')
+                    row.extend([container_impact, container_cpa, greenvan_impact, greenvan_cpa])
                 elif target_selection == "Container":
-                    container_miss = result['miss_distances'].get('Container', {}).get('ground', '')
-                    row.append(container_miss)
+                    container_impact = result['miss_distances'].get('Container', {}).get('impact_ground', '')
+                    container_cpa = result['miss_distances'].get('Container', {}).get('cpa_total', '')
+                    row.extend([container_impact, container_cpa])
                 else:  # Van
-                    greenvan_miss = result['miss_distances'].get('Van', {}).get('ground', '')
-                    row.append(greenvan_miss)
+                    greenvan_impact = result['miss_distances'].get('Van', {}).get('impact_ground', '')
+                    greenvan_cpa = result['miss_distances'].get('Van', {}).get('cpa_total', '')
+                    row.extend([greenvan_impact, greenvan_cpa])
                 
-                # Use first available target for impact coordinates
+                # Use first available target for coordinates
                 first_target = next(iter(result['miss_distances'].values()), {})
                 impact_lat = first_target.get('impact_lat', '')
                 impact_lon = first_target.get('impact_lon', '')
                 impact_alt_agl = first_target.get('impact_alt_agl', '')
-                row.extend([impact_lat, impact_lon, impact_alt_agl])
+                cpa_lat = first_target.get('cpa_lat', '')
+                cpa_lon = first_target.get('cpa_lon', '')
+                cpa_alt_agl = first_target.get('cpa_alt_agl', '')
+                cpa_time = first_target.get('cpa_time_s', '')
+                row.extend([impact_lat, impact_lon, impact_alt_agl, cpa_lat, cpa_lon, cpa_alt_agl, cpa_time])
             else:
                 # Fill empty columns based on target selection
-                empty_count = 1 if target_selection != "both" else 2
-                row.extend([''] * (empty_count + 3))  # miss distances + impact coordinates
+                metric_count = 2 if target_selection != "both" else 4  # impact + cpa for each target
+                row.extend([''] * (metric_count + 7))  # metrics + coordinates + time
             writer.writerow(row)
     
     print(f"\nDetailed results saved to: {results_file} (Target: {target_selection})")
@@ -755,18 +817,22 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     with open(stats_file, 'w', newline='') as f:
         import csv
         writer = csv.writer(f)
-        writer.writerow(['Target', 'Count', 'Mean_m', 'StdDev_m', 'Min_m', 'Max_m'])
+        writer.writerow(['Target', 'Count', 'Metric', 'Mean_m', 'StdDev_m', 'Min_m', 'Max_m'])
         
         for stat in stats_output:
-            writer.writerow([stat['target'], stat['count'], f"{stat['mean']:.1f}", 
-                           f"{stat['std']:.1f}", f"{stat['min']:.1f}", f"{stat['max']:.1f}"])
+            writer.writerow([stat['target'], stat['count'], 'Impact_Ground', 
+                           f"{stat['impact_ground_mean']:.1f}", f"{stat['impact_ground_std']:.1f}", 
+                           f"{stat['impact_ground_min']:.1f}", f"{stat['impact_ground_max']:.1f}"])
+            writer.writerow([stat['target'], stat['count'], 'CPA_Total', 
+                           f"{stat['cpa_total_mean']:.1f}", f"{stat['cpa_total_std']:.1f}", 
+                           f"{stat['cpa_total_min']:.1f}", f"{stat['cpa_total_max']:.1f}"])
     
     print(f"Summary statistics saved to: {stats_file}")
     print(f"\nTotal logs processed: {len(log_files)}")
     print(f"Successful engagements: {len([r for r in log_results if r['status'] == 'Success'])}")
     
     # Create 3D terminal engagement plot for batch (shows all trajectories with mean miss distance)
-    mean_miss = stats_output[0]['mean'] if stats_output else None
+    mean_miss = stats_output[0]['cpa_total_mean'] if stats_output else None
     plot_3d_terminal_engagement(trajectory_data, output_dir, target_selection, interactive_3d, mean_miss)
     
     # Create GPS trajectory plot for visual debugging (shows entire trajectories)
@@ -777,6 +843,9 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     
     # Create roll/pitch timeseries plot for all trajectories with offboard mode
     plot_roll_pitch(trajectory_data, output_dir, interactive_3d, target_selection)
+    
+    # Create miss distance histogram plots
+    plot_miss_distance_histograms(stats_output, output_dir, target_selection, interactive_3d)
 
 
 def main():
