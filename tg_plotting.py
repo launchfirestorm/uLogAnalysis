@@ -974,7 +974,7 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
     fig, axes = plt.subplots(2, 1, figsize=(10, 10))
     
     # Define bin edges for histograms (0-20m range with 2m bins)
-    bin_edges = np.arange(0, 22, 2)
+    bin_edges = np.arange(0, 21, 1)
     
     # Subplot 1: Impact Point Distance (ground)
     ax1 = axes[0]
@@ -994,6 +994,10 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
     ax1.grid(True, alpha=0.3, axis='y')
     ax1.legend(fontsize=10)
     ax1.set_xlim([0, 20])
+    ax1.set_xticks(bin_edges)
+
+    # Set x-axis ticks to show every bin edge
+    ax1.set_xticks(bin_edges)
     
     # Add count labels on bars
     for i, (count, patch) in enumerate(zip(counts1, patches1)):
@@ -1002,11 +1006,26 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
             ax1.text(patch.get_x() + patch.get_width()/2., height,
                     f'{int(count)}',
                     ha='center', va='bottom', fontsize=10, fontweight='bold')
-    
+        # Define bin edges for histograms (0-20m range with 2m bins)
+    bin_edges = np.arange(0, 11, 1)
     # Subplot 2: Closest Point of Approach (CPA) Total (3D) - True Miss Distance
     ax2 = axes[1]
     counts2, bins2, patches2 = ax2.hist(cpa_total_array, bins=bin_edges, 
                                          edgecolor='black', alpha=0.7, color='forestgreen')
+    
+    # Color the 0-1m bin (strong hit) and 1-2m bin (hit)
+    for i, patch in enumerate(patches2):
+        bin_start = bins2[i]
+        bin_end = bins2[i+1]
+        if bin_end <= 1.0:
+            # 0-1m range: Strong Hit (dark green)
+            patch.set_facecolor('darkred')
+            patch.set_alpha(0.8)
+        elif bin_start < 2.0 and bin_end <= 2.0:
+            # 1-2m range: Hit (medium green)
+            patch.set_facecolor('indianred')
+            patch.set_alpha(0.8)
+    
     ax2.axvline(stat['cpa_total_mean'], color='red', linestyle='--', linewidth=2, 
                 label=f"Mean = {stat['cpa_total_mean']:.1f}m")
     ax2.axvline(stat['cpa_total_mean'] + stat['cpa_total_std'], 
@@ -1020,7 +1039,10 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
                   fontsize=13, fontweight='bold')
     ax2.grid(True, alpha=0.3, axis='y')
     ax2.legend(fontsize=10)
-    ax2.set_xlim([0, 20])
+    ax2.set_xlim([0, 10])
+    
+    # Set x-axis ticks to show every bin edge
+    ax2.set_xticks(bin_edges)
     
     # Add count labels on bars
     for i, (count, patch) in enumerate(zip(counts2, patches2)):
@@ -1029,6 +1051,24 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
             ax2.text(patch.get_x() + patch.get_width()/2., height,
                     f'{int(count)}',
                     ha='center', va='bottom', fontsize=10, fontweight='bold')
+    
+    # Add text box with simulation requirements
+    mu_plus_2sigma = stat['cpa_total_mean'] + 2 * stat['cpa_total_std']
+    req_text = (
+        'Simulation Requirements:\n'
+        f'• Mean CPA Miss < 1.0 m\n'
+        f'• μ + 2σ < 2.0 m\n\n'
+        f'Current Results:\n'
+        f'• Mean = {stat["cpa_total_mean"]:.2f} m\n'
+        f'• μ + 2σ = {mu_plus_2sigma:.2f} m\n\n'
+        f'0-1m: Strong Hit\n'
+        f'1-2m: Hit'
+    )
+    
+    # Position text box in lower right
+    ax2.text(0.98, 0.03, req_text, transform=ax2.transAxes,
+            fontsize=10, verticalalignment='bottom', horizontalalignment='right',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black', linewidth=2))
     
     plt.tight_layout()
     
