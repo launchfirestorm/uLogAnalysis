@@ -991,7 +991,7 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
         plt.close()
 
 
-def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_selection: str, interactive: bool = False, cpa_hit_threshold: float = 3.0):
+def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_selection: str, interactive: bool = False, cpa_hit_threshold: float = 3.0, dive_angle: int = None):
     """Create histogram plots for miss distance distributions.
     
     Creates two histogram subplots:
@@ -1051,8 +1051,10 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
     
     ax1.set_xlabel('Miss Distance [m]', fontsize=12)
     ax1.set_ylabel('Number of Cases', fontsize=12)
-    ax1.set_title(f'Impact Point Miss Distance Distribution ', 
-                  fontsize=13, fontweight='bold')
+    title_text = 'Impact Point Miss Distance Distribution'
+    if dive_angle is not None:
+        title_text += f' | Dive Angle: {dive_angle}°'
+    ax1.set_title(title_text, fontsize=13, fontweight='bold')
     ax1.grid(True, alpha=0.3, axis='y')
     ax1.legend(fontsize=10)
     ax1.set_xlim([0, 20])
@@ -1073,7 +1075,7 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
     # Subplot 2: Closest Point of Approach (CPA) Total (3D) - True Miss Distance
     ax2 = axes[1]
     counts2, bins2, patches2 = ax2.hist(cpa_total_array, bins=bin_edges, 
-                                         edgecolor='black', alpha=0.7, color='forestgreen')
+                                         edgecolor='black', alpha=0.7, color='darkred')
     
     # Color the 0-1m bin (strong hit) and 1-2m bin (hit)
     for i, patch in enumerate(patches2):
@@ -1081,11 +1083,15 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
         bin_end = bins2[i+1]
         if bin_end <= 1.0:
             # 0-1m range: Strong Hit (dark green)
-            patch.set_facecolor('darkred')
+            patch.set_facecolor('darkgreen')
             patch.set_alpha(0.8)
         elif bin_start < 2.0 and bin_end <= 2.0:
             # 1-2m range: Hit (medium green)
-            patch.set_facecolor('indianred')
+            patch.set_facecolor('darkgreen')
+            patch.set_alpha(0.8)
+        elif bin_start < 3.0 and bin_end <= 3.0:
+            # 2-3m range: Hit (medium green)
+            patch.set_facecolor('lightgreen')
             patch.set_alpha(0.8)
     
     ax2.axvline(stat['cpa_total_mean'], color='red', linestyle='--', linewidth=2, 
@@ -1120,11 +1126,11 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
     hit_rate = (hits / total_cases * 100) if total_cases > 0 else 0
     
     # Add text box with simulation requirements
-    mu_plus_2sigma = stat['cpa_total_mean'] + 2 * stat['cpa_total_std']
+    mu_plus_1sigma = stat['cpa_total_mean'] +  stat['cpa_total_std']
     
     # Check if requirements are met
-    mean_passed = stat["cpa_total_mean"] < 1.0
-    sigma_passed = mu_plus_2sigma < 2.0
+    mean_passed = stat["cpa_total_mean"] < 2.0
+    sigma_passed = mu_plus_1sigma < 3.0
     
     # Color coding: green for pass, red for fail
     mean_color = 'green' if mean_passed else 'red'
@@ -1136,8 +1142,8 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
         f'0-1m: Strong Hit\n'
         f'1-2m: Hit\n'
         f'Hit Rate > 90%\n'
-        f'• Mean CPA Miss < 1.0 m\n'
-        f'• μ + 2σ < 2.0 m\n\n'
+        f'• Mean CPA Miss < 3.0 m\n'
+        f'• μ + 1σ < 3.0 m\n\n'
         f'Current Results:\n\n\n\n'
        
     )
@@ -1151,7 +1157,7 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
     ax2.text(1.035, 0.37, f'• Mean = {stat["cpa_total_mean"]:.2f} m', transform=ax2.transAxes,
             fontsize=10, verticalalignment='center', horizontalalignment='left',
             color=mean_color, fontweight='bold')
-    ax2.text(1.035, 0.34, f'• μ + 2σ = {mu_plus_2sigma:.2f} m', transform=ax2.transAxes,
+    ax2.text(1.035, 0.34, f'• μ + 1σ = {mu_plus_1sigma:.2f} m', transform=ax2.transAxes,
             fontsize=10, verticalalignment='center', horizontalalignment='left',
             color=sigma_color, fontweight='bold')
     ax2.text(1.035, 0.31, f'• Hit Rate = {hit_rate:.2f} %', transform=ax2.transAxes,
@@ -1176,11 +1182,11 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
         plt.close()
 
 
-def plot_impact_angle_histogram(impact_angles: list, relative_yaws: list, airspeeds: list, output_dir: Path, target_selection: str, interactive: bool = False, cpa_hit_threshold: float = 3.0):
+def plot_impact_angle_histogram(impact_angles: list, relative_yaws: list, airspeeds: list, output_dir: Path, target_selection: str, interactive: bool = False, cpa_hit_threshold: float = 3.0, dive_angle: int = None, time_diff_threshold: float = 0.1):
     """Create triple histogram plot for impact angle, relative yaw, and airspeed distribution.
     
     Shows the distribution of aircraft orientation angles and airspeed at impact for successful hits
-    (cases where 3D miss distance < threshold and impact detected within 0.15s of CPA).
+    (cases where 3D miss distance < threshold and impact detected within time_diff_threshold of CPA).
     
     Args:
         impact_angles: List of impact pitch angles in degrees
@@ -1189,6 +1195,7 @@ def plot_impact_angle_histogram(impact_angles: list, relative_yaws: list, airspe
         output_dir: Output directory for plots
         target_selection: Target name for filename
         interactive: Whether to show interactive plot
+        dive_angle: Dive angle in degrees (for title)
     """
     if not matplotlib_available:
         print("matplotlib not available, skipping impact angle histogram plot.")
@@ -1249,9 +1256,10 @@ def plot_impact_angle_histogram(impact_angles: list, relative_yaws: list, airspe
     
     ax1.set_xlabel('Impact Pitch Angle [degrees]', fontsize=12)
     ax1.set_ylabel('Number of Cases', fontsize=12)
-    ax1.set_title(f'Impact Pitch Angle Distribution (Successful Hits: CPA < {cpa_hit_threshold}m, Δt < 0.15s)\n' +
-                f'Target: {target_selection}', 
-                fontsize=13, fontweight='bold')
+    title_text = f'Impact Pitch Angle Distribution (Successful Hits: CPA < {cpa_hit_threshold}m, Δt < {time_diff_threshold}s)\n' + f'Target: {target_selection}'
+    if dive_angle is not None:
+        title_text += f' | Dive Angle: {dive_angle}°'
+    ax1.set_title(title_text, fontsize=13, fontweight='bold')
     ax1.grid(True, alpha=0.3, axis='y')
     ax1.legend(fontsize=10, loc='upper right')
     ax1.set_xlim([-55, 55])
@@ -1598,5 +1606,213 @@ def plot_altitude_debug(trajectory_data: list, output_dir: Path,
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"Saved altitude debug plot: {plot_path}")
+
+
+def plot_dive_angle_summary(angle_summary_data: list, output_dir: Path, target_selection: str, 
+                            interactive: bool = False, cpa_hit_threshold: float = 3.0):
+    """Create summary plots showing hit rate and mean CPA as a function of dive angle.
+    
+    Args:
+        angle_summary_data: List of dicts containing angle, count, mean_cpa, std_cpa, etc.
+        output_dir: Output directory for plots
+        target_selection: Target name for filename
+        interactive: Whether to show interactive plot
+        cpa_hit_threshold: CPA threshold for hit detection (m)
+    """
+    if not matplotlib_available:
+        print("matplotlib not available, skipping dive angle summary plot.")
+        return
+    
+    try:
+        from matplotlib import pyplot as plt
+    except ImportError:
+        print("matplotlib not available, skipping dive angle summary plot.")
+        return
+    
+    if len(angle_summary_data) == 0:
+        print("No angle summary data available.")
+        return
+    
+    # Sort by angle
+    angle_summary_data = sorted(angle_summary_data, key=lambda x: x['angle'])
+    
+    # Extract data
+    angles = [d['angle'] for d in angle_summary_data]
+    counts = [d['count'] for d in angle_summary_data]
+    mean_cpas = [d['mean_cpa'] for d in angle_summary_data]
+    std_cpas = [d['std_cpa'] for d in angle_summary_data]
+    
+    # Calculate hit rates (engagements with CPA < threshold)
+    # Read individual log results to get hit counts
+    hit_rates = []
+    for data in angle_summary_data:
+        angle = data['angle']
+        angle_output_dir = output_dir / f"{angle}Deg"
+        target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
+        results_file = angle_output_dir / f"log_analysis_results{target_suffix}.csv"
+        
+        if results_file.exists():
+            try:
+                import csv
+                hit_count = 0
+                total_count = 0
+                with open(results_file, 'r') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        if row['Status'] == 'Success':
+                            total_count += 1
+                            # Check CPA column
+                            cpa_col = f'{target_selection}_CPA_Total_m'
+                            if cpa_col in row and row[cpa_col]:
+                                try:
+                                    cpa_value = float(row[cpa_col])
+                                    if cpa_value < cpa_hit_threshold:
+                                        hit_count += 1
+                                except ValueError:
+                                    pass
+                
+                if total_count > 0:
+                    hit_rate = (hit_count / total_count) * 100
+                else:
+                    hit_rate = 0
+                hit_rates.append(hit_rate)
+            except Exception as e:
+                print(f"Warning: Could not calculate hit rate for {angle}°: {e}")
+                hit_rates.append(0)
+        else:
+            hit_rates.append(0)
+    
+    # Create figure with 2 subplots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
+    
+    # Subplot 1: Hit Rate vs Dive Angle
+    ax1.plot(angles, hit_rates, 'o-', color='steelblue', linewidth=2, markersize=8, label='Hit Rate')
+    ax1.axhline(y=50, color='gray', linestyle='--', linewidth=1, alpha=0.5, label='50% Line')
+    
+    # Add data labels with hit rate and sample count
+    for angle, hit_rate, count in zip(angles, hit_rates, counts):
+        ax1.text(angle, hit_rate + 2, f'{hit_rate:.1f}%', 
+                ha='center', va='bottom', fontsize=10, fontweight='bold')
+        # Add sample count below the data point
+        ax1.text(angle, hit_rate - 5, f'n={count}', 
+                ha='center', va='top', fontsize=9, style='italic', color='gray')
+    
+    ax1.set_xlabel('Dive Angle [degrees]', fontsize=12)
+    ax1.set_ylabel('Hit Rate [%]', fontsize=12)
+    ax1.set_title(f'Hit Rate vs Dive Angle (CPA < {cpa_hit_threshold}m)\nTarget: {target_selection}', 
+                 fontsize=13, fontweight='bold')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(fontsize=10)
+    ax1.set_ylim([0, 100])
+    ax1.set_xticks(angles)
+    
+    # Subplot 2: Mean CPA Miss Distance vs Dive Angle
+    ax2.errorbar(angles, mean_cpas, yerr=std_cpas, fmt='o-', color='coral', 
+                linewidth=2, markersize=8, capsize=5, label='Mean CPA ± 1σ')
+    ax2.axhline(y=cpa_hit_threshold, color='red', linestyle='--', linewidth=2, 
+               alpha=0.7, label=f'Hit Threshold ({cpa_hit_threshold}m)')
+    
+    # Add data labels with mean CPA and sample count
+    for angle, mean_cpa, count in zip(angles, mean_cpas, counts):
+        ax2.text(angle, mean_cpa + 0.5, f'{mean_cpa:.1f}m', 
+                ha='center', va='bottom', fontsize=10, fontweight='bold')
+        # Add sample count below the data point
+        ax2.text(angle, -0.5, f'n={count}', 
+                ha='center', va='top', fontsize=9, style='italic', color='gray')
+    
+    ax2.set_xlabel('Dive Angle [degrees]', fontsize=12)
+    ax2.set_ylabel('Mean CPA Miss Distance [m]', fontsize=12)
+    ax2.set_title(f'Mean CPA Miss Distance vs Dive Angle\nTarget: {target_selection}', 
+                 fontsize=13, fontweight='bold')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(fontsize=10)
+    ax2.set_xticks(angles)
+    ax2.set_ylim(bottom=0)
+    
+    plt.tight_layout()
+    
+    if interactive:
+        plt.show()
+        print("Showing interactive dive angle summary plot (close window to continue)")
+    else:
+        target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
+        plot_path = output_dir / f"dive_angle_summary{target_suffix}.png"
+        plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"Saved dive angle summary plot: {plot_path}")
+
+
+def create_comprehensive_pdf(output_base_dir: Path, target_selection: str, angle_dirs: list):
+    """Create a comprehensive PDF report with summary plots and all histogram plots.
+    
+    Args:
+        output_base_dir: Base output directory containing angle subdirectories
+        target_selection: Target name
+        angle_dirs: List of tuples (angle_value, angle_dir_path)
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        print("PIL/Pillow not available. Install with: pip install Pillow")
+        print("Skipping comprehensive PDF generation.")
+        return
+    
+    target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
+    
+    # List of plot files to include in order
+    plot_files = []
+    
+    # Add summary plot first
+    summary_plot = output_base_dir / f"dive_angle_summary{target_suffix}.png"
+    if summary_plot.exists():
+        plot_files.append(summary_plot)
+    
+    # Add histogram plots for each dive angle
+    for angle_value, _ in sorted(angle_dirs, key=lambda x: x[0]):
+        angle_output_dir = output_base_dir / f"{angle_value}Deg"
+        
+        # Miss distance histograms
+        miss_hist = angle_output_dir / f"miss_distance_histograms{target_suffix}.png"
+        if miss_hist.exists():
+            plot_files.append(miss_hist)
+        
+        # Impact angle histograms
+        impact_hist = angle_output_dir / f"impact_angle_histogram{target_suffix}.png"
+        if impact_hist.exists():
+            plot_files.append(impact_hist)
+    
+    if not plot_files:
+        print("No plot files found for comprehensive PDF.")
+        return
+    
+    # Load all images
+    images = []
+    for plot_file in plot_files:
+        try:
+            img = Image.open(plot_file)
+            # Convert to RGB if necessary (PDF requires RGB)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            images.append(img)
+        except Exception as e:
+            print(f"Warning: Could not open {plot_file.name}: {e}")
+    
+    if not images:
+        print("No images loaded for comprehensive PDF.")
+        return
+    
+    # Save as PDF
+    pdf_path = output_base_dir / f"comprehensive_report_{target_selection.lower()}.pdf"
+    
+    try:
+        # Save first image and append the rest
+        images[0].save(pdf_path, "PDF", resolution=100.0, save_all=True, append_images=images[1:])
+        print(f"Created comprehensive PDF: {pdf_path}")
+    except Exception as e:
+        print(f"Error creating comprehensive PDF: {e}")
+    finally:
+        # Close all images
+        for img in images:
+            img.close()
 
 

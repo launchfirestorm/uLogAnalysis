@@ -668,7 +668,8 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
                          pitch_threshold: float = -4.0, accel_threshold: float = 15.0, 
                          deriv_threshold: float = 2.0, alt_threshold: float = 5.0,
                          target_selection: str = "both", interactive_3d: bool = False,
-                         cpa_hit_threshold: float = 3.0) -> None:
+                         cpa_hit_threshold: float = 3.0, dive_angle: int = None,
+                         time_diff_threshold: float = 0.1) -> None:
     """Process multiple log files and calculate miss distance statistics."""
     # Find all .ulg files in the logs directory and subdirectories
     log_files = list(logs_dir.rglob("*.ulg"))
@@ -681,7 +682,7 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     
     # Initialize miss distances based on target selection
     all_miss_distances = {target_selection: []}
-    all_impact_angles = []  # For successful hits (CPA < threshold with impact within 0.15s)
+    all_impact_angles = []  # For successful hits (CPA < threshold with impact within time_diff_threshold)
     all_relative_yaws = []  # Relative yaw angles at impact for successful hits
     all_dive_yaws = []  # Collect all dive yaw values to calculate mean "true" heading
     all_airspeeds = []  # Airspeed at impact for successful hits
@@ -743,7 +744,7 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
                     print(f"    {target_name}: Impact={impact_dist:.1f}m, CPA={cpa_dist:.1f}m (true miss)")
                     all_miss_distances[target_name].append(distances)
                     
-                    # Check if this is a successful hit (CPA < threshold with impact within 0.15s of CPA)
+                    # Check if this is a successful hit (CPA < threshold with impact within time_diff_threshold of CPA)
                     if cpa_dist < cpa_hit_threshold:
                         # Get timing information
                         first_impact_idx = engagement_masks.get('first_impact_idx')
@@ -752,7 +753,7 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
                             cpa_time = distances['cpa_time_s']
                             time_diff = abs(impact_time - cpa_time)
                             
-                            if time_diff < 0.15:  # Impact within 0.15s of CPA
+                            if time_diff < time_diff_threshold:  # Impact within threshold of CPA
                                 # Calculate impact angle at impact point
                                 roll = data["roll_deg"][first_impact_idx]
                                 pitch = data["pitch_deg"][first_impact_idx]
@@ -921,12 +922,12 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     plot_altitude_debug(trajectory_data, output_dir, target_selection, interactive_3d)
     
     # Create miss distance histogram plots
-    plot_miss_distance_histograms(stats_output, output_dir, target_selection, interactive_3d, cpa_hit_threshold)
+    plot_miss_distance_histograms(stats_output, output_dir, target_selection, interactive_3d, cpa_hit_threshold, dive_angle)
     
     # Create impact angle histogram for successful hits
     if len(all_impact_angles) > 0:
         print(f"\n=== Impact Angle Analysis ===")
-        print(f"Successful hits (CPA < {cpa_hit_threshold}m, impact within 0.15s): {len(all_impact_angles)}")
+        print(f"Successful hits (CPA < {cpa_hit_threshold}m, impact within {time_diff_threshold}s): {len(all_impact_angles)}")
         
         # Calculate mean dive heading from all trajectories
         if len(all_dive_yaws) > 0:
@@ -965,10 +966,10 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
             print(f"Median impact angle: {np.median(all_impact_angles):.1f}°")
             print(f"Std deviation: {np.std(all_impact_angles):.1f}°")
         
-        plot_impact_angle_histogram(all_impact_angles, all_relative_yaws, all_airspeeds, output_dir, target_selection, interactive_3d, cpa_hit_threshold)
+        plot_impact_angle_histogram(all_impact_angles, all_relative_yaws, all_airspeeds, output_dir, target_selection, interactive_3d, cpa_hit_threshold, dive_angle, time_diff_threshold)
     else:
         print(f"\n=== Impact Angle Analysis ===")
-        print(f"No successful hits found (CPA < {cpa_hit_threshold}m with impact within 0.15s of CPA)")
+        print(f"No successful hits found (CPA < {cpa_hit_threshold}m with impact within {time_diff_threshold}s of CPA)")
     
     # Combine all PNG plots into a single PDF
     combine_plots_to_pdf(output_dir, target_selection, len(trajectory_data) > 1)
@@ -1049,7 +1050,7 @@ def process_logs_by_dive_angle(base_dir: Path, output_base_dir: Path,
                               pitch_threshold: float = -4.0, accel_threshold: float = 15.0,
                               deriv_threshold: float = 2.0, alt_threshold: float = 5.0,
                               target_selection: str = "Van", interactive_3d: bool = False,
-                              cpa_hit_threshold: float = 3.0) -> None:
+                              cpa_hit_threshold: float = 3.0, time_diff_threshold: float = 0.1) -> None:
     """Process logs organized by dive angle subdirectories.
     
     Expects directory structure like:
@@ -1104,7 +1105,8 @@ def process_logs_by_dive_angle(base_dir: Path, output_base_dir: Path,
         # Process all logs in this angle directory
         process_multiple_logs(angle_dir, angle_output_dir,
                             pitch_threshold, accel_threshold, deriv_threshold, alt_threshold,
-                            target_selection, interactive_3d, cpa_hit_threshold)
+                            target_selection, interactive_3d, cpa_hit_threshold, angle_value,
+                            time_diff_threshold)
         
         print(f"\nCompleted {angle_value}° dive angle analysis")
         print(f"Results saved to: {angle_output_dir}")
@@ -1113,12 +1115,55 @@ def process_logs_by_dive_angle(base_dir: Path, output_base_dir: Path,
     print(f"ALL DIVE ANGLES PROCESSED")
     print(f"{'='*80}")
     print(f"Summary:")
+    
+    # Collect statistics for summary plots
+    angle_summary_data = []
     for angle_value, _ in angle_dirs:
         angle_output_dir = output_base_dir / f"{angle_value}Deg"
         target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
         pdf_file = angle_output_dir / f"combined_analysis{target_suffix}.pdf"
+        stats_file = angle_output_dir / "miss_distance_statistics.csv"
+        
         if pdf_file.exists():
             print(f"  {angle_value}°: {pdf_file}")
+        
+        # Read statistics for summary
+        if stats_file.exists():
+            try:
+                import csv
+                with open(stats_file, 'r') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        if row['Metric'] == 'CPA_Total':
+                            angle_summary_data.append({
+                                'angle': angle_value,
+                                'count': int(row['Count']),
+                                'mean_cpa': float(row['Mean_m']),
+                                'std_cpa': float(row['StdDev_m']),
+                                'min_cpa': float(row['Min_m']),
+                                'max_cpa': float(row['Max_m'])
+                            })
+                            break
+            except Exception as e:
+                print(f"Warning: Could not read stats for {angle_value}°: {e}")
+    
+    # Create summary plots and comprehensive PDF
+    if len(angle_summary_data) > 0:
+        print(f"\n{'='*80}")
+        print(f"Creating Summary Plots and Comprehensive Report")
+        print(f"{'='*80}")
+        
+        from tg_plotting import plot_dive_angle_summary, create_comprehensive_pdf
+        
+        # Create summary plot
+        plot_dive_angle_summary(angle_summary_data, output_base_dir, target_selection, 
+                              interactive_3d, cpa_hit_threshold)
+        
+        # Create comprehensive PDF with all histograms and summary plots
+        create_comprehensive_pdf(output_base_dir, target_selection, angle_dirs)
+        
+        print(f"Comprehensive report saved to: {output_base_dir / f'comprehensive_report_{target_selection.lower()}.pdf'}")
+    
     print(f"{'='*80}\n")
 
 
@@ -1137,6 +1182,7 @@ def main():
     parser.add_argument("--target", choices=["Container", "Van"], required=True, help="Target selection: 'Container' or 'Van' (required)")
     parser.add_argument("--by-dive-angle", action="store_true", help="Process logs grouped by dive angle subdirectories (e.g., 10Deg, 15Deg, etc.)")
     parser.add_argument("--cpa-hit-threshold", type=float, default=3.0, help="CPA threshold for successful hit detection (m). Default 3.0")
+    parser.add_argument("--time-diff-threshold", type=float, default=0.1, help="Time difference threshold between CPA and impact for hit detection (s). Default 0.1")
     
     args = parser.parse_args()
     
@@ -1159,13 +1205,13 @@ def main():
             # Process logs grouped by dive angle subdirectories
             process_logs_by_dive_angle(args.logs_dir, args.output,
                                       args.pitch_threshold, args.accel_threshold, args.deriv_threshold, args.alt_threshold,
-                                      args.target, args.interactive_3d, args.cpa_hit_threshold)
+                                      args.target, args.interactive_3d, args.cpa_hit_threshold, args.time_diff_threshold)
         else:
             # Standard batch processing (all files in one group)
             print(f"Batch processing mode: analyzing all .ulg files in {args.logs_dir}")
             process_multiple_logs(args.logs_dir, args.output, 
                                 args.pitch_threshold, args.accel_threshold, args.deriv_threshold, args.alt_threshold,
-                                args.target, args.interactive_3d, args.cpa_hit_threshold)
+                                args.target, args.interactive_3d, args.cpa_hit_threshold, None, args.time_diff_threshold)
         return
 
     # Single file processing mode (original behavior)
