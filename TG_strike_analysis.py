@@ -18,11 +18,13 @@ from tg_plotting import (
     plot_roll_pitch, 
     gps_trajectory_plot,
     plot_accelerometer_impacts,
-    plot_miss_distance_histograms
+    plot_miss_distance_histograms,
+    plot_impact_angle_histogram
 )
 from tg_utils import (
     quaternion_to_euler as quaternion_to_euler, 
-    quaternion_to_euler_degrees as quaternion_to_euler_degrees, 
+    quaternion_to_euler_degrees as quaternion_to_euler_degrees,
+    calculate_impact_angle
 )
 
 def set_matplotlib_backend(interactive: bool = False):
@@ -207,6 +209,12 @@ def extract_position_attitude(ulog) -> Dict[str, np.ndarray]:
     landed_i = np.zeros(len(t_pos))
     ground_contact_i = np.zeros(len(t_pos))
     
+    # Calculate airspeed from velocity components
+    vx_i = pos.get("vx", np.zeros(len(t_pos)))
+    vy_i = pos.get("vy", np.zeros(len(t_pos)))
+    vz_i = pos.get("vz", np.zeros(len(t_pos)))
+    airspeed_i = np.sqrt(vx_i**2 + vy_i**2 + vz_i**2)
+    
     # Extract accelerometer data if available
     try:
         accel_data = ulog.get_dataset('sensor_combined').data
@@ -266,6 +274,7 @@ def extract_position_attitude(ulog) -> Dict[str, np.ndarray]:
         "accel_z": accel_z_i,
         "vertical_velocity": vertical_velocity_i,
         "altitude_agl": altitude_agl_i,
+        "airspeed": airspeed_i,
         "landed": landed_i,
         "ground_contact": ground_contact_i,
         "flight_mode": flight_mode_i,
@@ -669,6 +678,10 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     
     # Initialize miss distances based on target selection
     all_miss_distances = {target_selection: []}
+    all_impact_angles = []  # For successful hits (CPA < 2m with impact within 0.5s)
+    all_relative_yaws = []  # Relative yaw angles at impact for successful hits
+    all_dive_yaws = []  # Collect all dive yaw values to calculate mean "true" heading
+    all_airspeeds = []  # Airspeed at impact for successful hits
     
     log_results = []
     trajectory_data = []  # For GPS trajectory plotting
@@ -686,13 +699,21 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
                                                       accel_threshold, deriv_threshold, alt_threshold)
             mask = engagement_masks['terminal_engagement_mask']
             
-            # Collect trajectory data for GPS plotting (even if no engagement)
+            # Calculate miss distances first (before adding to trajectory_data)
+            miss_distances = {}
+            if np.any(mask):
+                miss_distances = calculate_miss_distances(ulog, data, mask, engagement_masks, 
+                                                        pitch_threshold, accel_threshold, deriv_threshold, alt_threshold,
+                                                        target_selection)
+            
+            # Collect trajectory data for GPS plotting (with miss_distances)
             trajectory_data.append({
                 'filename': log_file.name,
                 'ulog': ulog,
                 'data': data,
                 'mask': mask,
-                'engagement_masks': engagement_masks
+                'engagement_masks': engagement_masks,
+                'miss_distances': miss_distances
             })
             
             if not np.any(mask):
@@ -704,18 +725,50 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
                 })
                 continue
             
-            # Calculate miss distances using pre-computed masks
-            miss_distances = calculate_miss_distances(ulog, data, mask, engagement_masks, 
-                                                    pitch_threshold, accel_threshold, deriv_threshold, alt_threshold,
-                                                    target_selection)
-            
             if miss_distances:
                 print(f"  Terminal engagement found:")
+                
+                # Collect dive yaw for calculating mean "true" heading
+                first_dive_idx = engagement_masks.get('first_dive_idx')
+                if first_dive_idx is not None:
+                    dive_yaw = data["yaw_deg"][first_dive_idx]
+                    all_dive_yaws.append(dive_yaw)
+                
                 for target_name, distances in miss_distances.items():
                     impact_dist = distances['impact_ground']
                     cpa_dist = distances['cpa_total']
                     print(f"    {target_name}: Impact={impact_dist:.1f}m, CPA={cpa_dist:.1f}m (true miss)")
                     all_miss_distances[target_name].append(distances)
+                    
+                    # Check if this is a successful hit (CPA < 2m with impact within 0.5s of CPA)
+                    if cpa_dist < 2.0:
+                        # Get timing information
+                        first_impact_idx = engagement_masks.get('first_impact_idx')
+                        if first_impact_idx is not None:
+                            impact_time = (data["timestamp_us"][first_impact_idx] - data["timestamp_us"][0]) * 1e-6
+                            cpa_time = distances['cpa_time_s']
+                            time_diff = abs(impact_time - cpa_time)
+                            
+                            if time_diff < 0.5:  # Impact within 0.5s of CPA
+                                # Calculate impact angle at impact point
+                                roll = data["roll_deg"][first_impact_idx]
+                                pitch = data["pitch_deg"][first_impact_idx]
+                                yaw = data["yaw_deg"][first_impact_idx]
+                                # impact_angle = calculate_impact_angle(roll, pitch, yaw)
+                                impact_angle = pitch  # Simplified for vertical dive
+                                all_impact_angles.append(impact_angle)
+                                
+                                # Store impact yaw for later relative yaw calculation
+                                # We'll calculate relative yaw after processing all files
+                                all_relative_yaws.append(yaw)  # Temporarily store absolute yaw
+                                
+                                # Store airspeed at impact
+                                airspeed = data["airspeed"][first_impact_idx]
+                                all_airspeeds.append(airspeed)
+                                
+                                print(f"      Successful HIT! Impact angle: {impact_angle:.1f}° (Δt={time_diff:.3f}s)")
+                                print(f"      Yaw: {yaw:.1f}°, Airspeed: {airspeed:.1f} m/s")
+
                 
                 log_results.append({
                     'file': log_file.name,
@@ -864,6 +917,53 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     # Create miss distance histogram plots
     plot_miss_distance_histograms(stats_output, output_dir, target_selection, interactive_3d)
     
+    # Create impact angle histogram for successful hits
+    if len(all_impact_angles) > 0:
+        print(f"\n=== Impact Angle Analysis ===")
+        print(f"Successful hits (CPA < 2m, impact within 0.5s): {len(all_impact_angles)}")
+        
+        # Calculate mean dive heading from all trajectories
+        if len(all_dive_yaws) > 0:
+            mean_dive_heading = np.mean(all_dive_yaws)
+            print(f"Mean dive heading: {mean_dive_heading:.1f}°")
+            
+            # Convert absolute yaws to relative yaws (difference from mean heading)
+            for i in range(len(all_relative_yaws)):
+                absolute_yaw = all_relative_yaws[i]
+                relative_yaw = absolute_yaw - mean_dive_heading
+                
+                # Normalize to -180° to +180° range
+                while relative_yaw > 180:
+                    relative_yaw -= 360
+                while relative_yaw < -180:
+                    relative_yaw += 360
+                
+                all_relative_yaws[i] = relative_yaw
+            
+            print(f"\nPitch Angle Statistics:")
+            print(f"  Mean: {np.mean(all_impact_angles):.1f}°")
+            print(f"  Median: {np.median(all_impact_angles):.1f}°")
+            print(f"  Std deviation: {np.std(all_impact_angles):.1f}°")
+            
+            print(f"\nRelative Yaw Statistics:")
+            print(f"  Mean: {np.mean(all_relative_yaws):.1f}°")
+            print(f"  Median: {np.median(all_relative_yaws):.1f}°")
+            print(f"  Std deviation: {np.std(all_relative_yaws):.1f}°")
+            
+            print(f"\nAirspeed Statistics:")
+            print(f"  Mean: {np.mean(all_airspeeds)*2.237:.1f} mph ({np.mean(all_airspeeds):.1f} m/s)")
+            print(f"  Median: {np.median(all_airspeeds)*2.237:.1f} mph ({np.median(all_airspeeds):.1f} m/s)")
+            print(f"  Std deviation: {np.std(all_airspeeds)*2.237:.1f} mph ({np.std(all_airspeeds):.1f} m/s)")
+        else:
+            print(f"Mean impact angle: {np.mean(all_impact_angles):.1f}°")
+            print(f"Median impact angle: {np.median(all_impact_angles):.1f}°")
+            print(f"Std deviation: {np.std(all_impact_angles):.1f}°")
+        
+        plot_impact_angle_histogram(all_impact_angles, all_relative_yaws, all_airspeeds, output_dir, target_selection, interactive_3d)
+    else:
+        print(f"\n=== Impact Angle Analysis ===")
+        print("No successful hits found (CPA < 2m with impact within 0.5s of CPA)")
+    
     # Combine all PNG plots into a single PDF
     combine_plots_to_pdf(output_dir, target_selection, len(trajectory_data) > 1)
 
@@ -890,18 +990,20 @@ def combine_plots_to_pdf(output_dir: Path, target_selection: str, is_batch: bool
         plot_files = [
             f"combined_3d_terminal_engagement{target_suffix}.png",
             f"combined_gps_trajectories{target_suffix}.png",
-            f"combined_roll_pitch{target_suffix}.png",
+            f"combined_roll_pitch_yaw{target_suffix}.png",
             f"combined_accelerometer_method1{target_suffix}.png",
             f"combined_accelerometer_method2{target_suffix}.png",
-            f"miss_distance_histograms{target_suffix}.png"
+            f"miss_distance_histograms{target_suffix}.png",
+            f"impact_angle_histogram{target_suffix}.png"
         ]
     else:
         plot_files = [
             f"3d_terminal_engagement{target_suffix}.png",
             f"gps_trajectories{target_suffix}.png",
-            f"roll_pitch_timeseries{target_suffix}.png",
+            f"roll_pitch_yaw_timeseries{target_suffix}.png",
             f"accelerometer_method1{target_suffix}.png",
-            f"accelerometer_method2{target_suffix}.png"
+            f"accelerometer_method2{target_suffix}.png",
+            f"impact_angle_histogram{target_suffix}.png"
         ]
     
     # Collect existing plot files

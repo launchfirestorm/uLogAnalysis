@@ -247,9 +247,9 @@ def plot_3d_terminal_engagement(trajectory_data: list, out_dir: Path,
 
 def plot_roll_pitch(trajectory_data: list, out_dir: Path, 
                    interactive: bool = False, target_selection: str = "Van"):
-    """Create roll and pitch timeseries plots with setpoints during terminal engagement for all trajectories.
+    """Create roll, pitch, and yaw timeseries plots with setpoints during terminal engagement for all trajectories.
     
-    Creates subplots showing roll and pitch for each trajectory with offboard mode regions marked.
+    Creates subplots showing roll, pitch, and yaw for each trajectory with offboard mode regions marked.
     
     Args:
         trajectory_data: List of dicts containing trajectory info
@@ -275,13 +275,13 @@ def plot_roll_pitch(trajectory_data: list, out_dir: Path,
     valid_trajectories = [t for t in trajectory_data if np.any(t['mask'])]
     
     if len(valid_trajectories) == 0:
-        print("No terminal engagement data to plot for roll/pitch timeseries.")
+        print("No terminal engagement data to plot for roll/pitch/yaw timeseries.")
         return
     
     n_trajectories = len(valid_trajectories)
     
-    # Create subplots - 2 columns (roll, pitch) per trajectory
-    fig, axes = plt.subplots(n_trajectories, 2, figsize=(16, 4 * n_trajectories), sharex='col')
+    # Create subplots - 3 columns (roll, pitch, yaw) per trajectory
+    fig, axes = plt.subplots(n_trajectories, 3, figsize=(22, 4 * n_trajectories), sharex='col')
     if n_trajectories == 1:
         axes = axes.reshape(1, -1)
     
@@ -376,19 +376,55 @@ def plot_roll_pitch(trajectory_data: list, out_dir: Path,
         ax_pitch.legend(loc='best', fontsize=8)
         if idx == n_trajectories - 1:
             ax_pitch.set_xlabel('Time [s]')
+        
+        # Yaw subplot
+        ax_yaw = axes[idx, 2]
+        ax_yaw.plot(time_engagement, data["yaw_deg"][mask], 'r-', linewidth=2, label='Yaw')
+        if 'yaw_sp_deg' in data and np.any(data["yaw_sp_deg"][mask] != 0):
+            ax_yaw.plot(time_engagement, data["yaw_sp_deg"][mask], 'r--', linewidth=1.5, alpha=0.7, label='Yaw Setpoint')
+        
+        # Mark offboard mode regions on yaw plot
+        if 'offboard_mode' in data and np.any(data['offboard_mode'][mask]):
+            offboard_in_mask = data['offboard_mode'][mask]
+            offboard_transitions = np.diff(offboard_in_mask.astype(int), prepend=0, append=0)
+            offboard_starts = np.where(offboard_transitions == 1)[0]
+            offboard_ends = np.where(offboard_transitions == -1)[0]
+            
+            for start_idx, end_idx in zip(offboard_starts, offboard_ends):
+                ax_yaw.axvspan(time_engagement[start_idx], time_engagement[end_idx-1], 
+                               alpha=0.2, color='cyan', label='Offboard Mode' if start_idx == offboard_starts[0] else '')
+        
+        # Mark dive and impact on yaw plot
+        if len(dive_pos_in_mask) > 0:
+            dive_idx = dive_pos_in_mask[0]
+            ax_yaw.axvline(x=time_engagement[dive_idx], color='orange', linestyle=':', alpha=0.7, linewidth=2)
+            ax_yaw.scatter(time_engagement[dive_idx], data["yaw_deg"][mask][dive_idx], 
+                          color='orange', s=100, marker='^', edgecolors='black', linewidth=1.5, zorder=5)
+        if len(impact_pos_in_mask) > 0:
+            impact_idx = impact_pos_in_mask[0]
+            ax_yaw.axvline(x=time_engagement[impact_idx], color='red', linestyle=':', alpha=0.7, linewidth=2)
+            ax_yaw.scatter(time_engagement[impact_idx], data["yaw_deg"][mask][impact_idx], 
+                          color='red', s=120, marker='X', edgecolors='black', linewidth=1.5, zorder=5)
+        
+        ax_yaw.set_ylabel('Yaw [deg]')
+        ax_yaw.set_title(f'{filename} - Yaw', fontsize=10)
+        ax_yaw.grid(True, alpha=0.3)
+        ax_yaw.legend(loc='best', fontsize=8)
+        if idx == n_trajectories - 1:
+            ax_yaw.set_xlabel('Time [s]')
     
     plt.tight_layout()
     
     if interactive:
         plt.show()
-        print("Showing interactive roll/pitch timeseries plot (close window to continue)")
+        print("Showing interactive roll/pitch/yaw timeseries plot (close window to continue)")
     else:
         target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
-        prefix = "combined_roll_pitch" if n_trajectories > 1 else "roll_pitch_timeseries"
+        prefix = "combined_roll_pitch_yaw" if n_trajectories > 1 else "roll_pitch_yaw_timeseries"
         plot_path = out_dir / f"{prefix}{target_suffix}.png"
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
-        print(f"Saved roll/pitch timeseries plot: {plot_path}")
+        print(f"Saved roll/pitch/yaw timeseries plot: {plot_path}")
 
 
 def gps_trajectory_plot(trajectory_data: list, output_dir: Path, target_selection: str,
@@ -664,6 +700,7 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
             - 'filename': Name of the log file
             - 'data': Extracted data dictionary with accelerometer data
             - 'engagement_masks': Dictionary with impact_mask and impact_indices
+            - 'miss_distances': Optional dict with CPA information
         output_dir: Directory to save plots
         target_selection: Target name ('Container' or 'Van')
         interactive: Whether to show interactive plots
@@ -759,6 +796,21 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
                         ax.scatter(impact_time, data['accel_magnitude'][idx], color='purple', s=150, marker='D',
                                   edgecolors='black', linewidth=2, zorder=5, label='Method 3: Fallback (1m AGL)')
                         ax.axvline(x=impact_time, color='purple', linestyle=':', alpha=0.5, linewidth=1)
+            
+            # Mark Closest Point of Approach (CPA) if available
+            miss_distances = traj_info.get('miss_distances', {})
+            if miss_distances and target_selection in miss_distances:
+                cpa_time_s = miss_distances[target_selection].get('cpa_time_s')
+                if cpa_time_s is not None:
+                    # Convert to time relative to dive start
+                    cpa_time_relative = cpa_time_s - (data['timestamp_us'][first_dive_idx] - data['timestamp_us'][0]) * 1e-6
+                    if 0 <= cpa_time_relative <= time_s[-1]:
+                        # Find corresponding acceleration value
+                        cpa_idx_in_dive = np.argmin(np.abs(time_s - cpa_time_relative))
+                        cpa_accel = data['accel_magnitude'][dive_mask][cpa_idx_in_dive]
+                        ax.scatter(cpa_time_relative, cpa_accel, color='cyan', s=120, marker='*',
+                                  edgecolors='darkblue', linewidth=2, zorder=6, label='Closest Approach (CPA)')
+                        ax.axvline(x=cpa_time_relative, color='cyan', linestyle='-.', alpha=0.6, linewidth=1.5)
             
             # Mark acceleration threshold
             ax.axhline(y=15.0, color='orange', linestyle=':', alpha=0.5, linewidth=1.5, 
@@ -890,6 +942,21 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
                         ax.scatter(impact_time, data['accel_derivative_smooth'][idx], color='purple', s=150, marker='D',
                                   edgecolors='black', linewidth=2, zorder=5, label='Method 3: Fallback (1m AGL)')
                         ax.axvline(x=impact_time, color='purple', linestyle=':', alpha=0.5, linewidth=1)
+            
+            # Mark Closest Point of Approach (CPA) if available
+            miss_distances = traj_info.get('miss_distances', {})
+            if miss_distances and target_selection in miss_distances and 'accel_derivative_smooth' in data:
+                cpa_time_s = miss_distances[target_selection].get('cpa_time_s')
+                if cpa_time_s is not None:
+                    # Convert to time relative to dive start
+                    cpa_time_relative = cpa_time_s - (data['timestamp_us'][first_dive_idx] - data['timestamp_us'][0]) * 1e-6
+                    if 0 <= cpa_time_relative <= time_s[-1]:
+                        # Find corresponding derivative value
+                        cpa_idx_in_dive = np.argmin(np.abs(time_s - cpa_time_relative))
+                        cpa_deriv = data['accel_derivative_smooth'][dive_mask][cpa_idx_in_dive]
+                        ax.scatter(cpa_time_relative, cpa_deriv, color='cyan', s=120, marker='*',
+                                  edgecolors='darkblue', linewidth=2, zorder=6, label='Closest Approach (CPA)')
+                        ax.axvline(x=cpa_time_relative, color='cyan', linestyle='-.', alpha=0.6, linewidth=1.5)
             
             # Mark derivative threshold (only positive since we're using magnitude)
             ax.axhline(y=2.0, color='orange', linestyle=':', alpha=0.5, linewidth=1.5, 
@@ -1081,5 +1148,269 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"Saved miss distance histogram: {plot_path}")
+
+
+def plot_impact_angle_histogram(impact_angles: list, relative_yaws: list, airspeeds: list, output_dir: Path, target_selection: str, interactive: bool = False):
+    """Create triple histogram plot for impact angle, relative yaw, and airspeed distribution.
+    
+    Shows the distribution of aircraft orientation angles and airspeed at impact for successful hits
+    (cases where 3D miss distance < 2m and impact detected within 0.5s of CPA).
+    
+    Args:
+        impact_angles: List of impact pitch angles in degrees
+        relative_yaws: List of relative yaw angles in degrees (difference from mean dive heading)
+        airspeeds: List of airspeed values at impact in m/s
+        output_dir: Output directory for plots
+        target_selection: Target name for filename
+        interactive: Whether to show interactive plot
+    """
+    if not matplotlib_available:
+        print("matplotlib not available, skipping impact angle histogram plot.")
+        return
+        
+    try:
+        from matplotlib import pyplot as plt
+    except ImportError:
+        print("matplotlib not available, skipping impact angle histogram plot.")
+        return
+    
+    if not impact_angles or len(impact_angles) == 0:
+        print("No impact angle data available for histogram plotting.")
+        return
+    
+    if len(impact_angles) < 2:
+        print("Need at least 2 data points for impact angle histogram plotting.")
+        return
+    
+    impact_angles_array = np.array(impact_angles)
+    
+    # Create figure with 3 rows of subplots
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 16))
+    
+    # ========== TOP SUBPLOT: PITCH ANGLE ==========
+    # Define bin edges for histogram (-90 to 90 degrees with 5 degree bins)
+    # Negative angles = nose up, positive angles = nose down
+    bin_edges = np.arange(-55, 55, 5)
+    
+    # Create histogram
+    counts, bins, patches = ax1.hist(impact_angles_array, bins=bin_edges, 
+                                    edgecolor='black', alpha=0.7, color='steelblue')
+    
+    # Calculate statistics
+    mean_angle = np.mean(impact_angles_array)
+    std_angle = np.std(impact_angles_array)
+    median_angle = np.median(impact_angles_array)
+    
+    # Add mean and median lines
+    ax1.axvline(mean_angle, color='red', linestyle='--', linewidth=2, 
+               label=f"Mean = {mean_angle:.1f}°")
+    ax1.axvline(median_angle, color='green', linestyle='--', linewidth=2,
+               label=f"Median = {median_angle:.1f}°")
+    ax1.axvline(mean_angle + std_angle, color='orange', linestyle=':', linewidth=2,
+               label=f"±1σ = {std_angle:.1f}°")
+    ax1.axvline(mean_angle - std_angle, color='orange', linestyle=':', linewidth=2)
+    
+    # Add reference line at 0° (horizontal)
+    ax1.axvline(0, color='gray', linestyle='-', linewidth=1, alpha=0.5, label='0° (Horizontal)')
+    
+    # Add count labels on bars
+    for i, (count, patch) in enumerate(zip(counts, patches)):
+        if count > 0:
+            height = patch.get_height()
+            ax1.text(patch.get_x() + patch.get_width()/2., height,
+                   f'{int(count)}',
+                   ha='center', va='bottom', fontsize=10, fontweight='bold')
+    
+    ax1.set_xlabel('Impact Pitch Angle [degrees]', fontsize=12)
+    ax1.set_ylabel('Number of Cases', fontsize=12)
+    ax1.set_title(f'Impact Pitch Angle Distribution (Successful Hits: CPA < 2m)\n' +
+                f'Target: {target_selection}', 
+                fontsize=13, fontweight='bold')
+    ax1.grid(True, alpha=0.3, axis='y')
+    ax1.legend(fontsize=10, loc='upper right')
+    ax1.set_xlim([-55, 55])
+    ax1.set_xticks(np.arange(-55, 55, 5))  # Major ticks every 10 degrees
+    
+    # Add text box with statistics and explanation - positioned below legend
+    stats_text = (
+        f'Pitch Angle Statistics:\n'
+        f'(n = {len(impact_angles)} hits)\n\n'
+        f'Mean: {mean_angle:.1f}°\n'
+        f'Median: {median_angle:.1f}°\n'
+        f'Std Dev: {std_angle:.1f}°\n'
+        f'Min: {np.min(impact_angles_array):.1f}°\n'
+        f'Max: {np.max(impact_angles_array):.1f}°\n\n'
+        f'Angle Convention:\n'
+        f'  -90° = Vertical climb\n'
+        f'     0° = Horizontal\n'
+        f'  +90° = Vertical dive'
+    )
+    
+    # Position text box below legend in upper right
+    ax1.text(0.98, 0.62, stats_text, transform=ax1.transAxes,
+           fontsize=9, verticalalignment='top', horizontalalignment='right',
+           bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8, 
+                    edgecolor='black', linewidth=2))
+    
+    # ========== BOTTOM SUBPLOT: RELATIVE YAW ==========
+    if relative_yaws and len(relative_yaws) > 0:
+        relative_yaws_array = np.array(relative_yaws)
+        
+        # Define bin edges for yaw histogram (-180 to 180 degrees with 10 degree bins)
+        yaw_bin_edges = np.arange(-35, 35, 5)
+        
+        # Create histogram
+        yaw_counts, yaw_bins, yaw_patches = ax2.hist(relative_yaws_array, bins=yaw_bin_edges, 
+                                        edgecolor='black', alpha=0.7, color='coral')
+        
+        # Calculate statistics
+        mean_yaw = np.mean(relative_yaws_array)
+        std_yaw = np.std(relative_yaws_array)
+        median_yaw = np.median(relative_yaws_array)
+        
+        # Add mean and median lines
+        ax2.axvline(mean_yaw, color='red', linestyle='--', linewidth=2, 
+                   label=f"Mean = {mean_yaw:.1f}°")
+        ax2.axvline(median_yaw, color='green', linestyle='--', linewidth=2,
+                   label=f"Median = {median_yaw:.1f}°")
+        ax2.axvline(mean_yaw + std_yaw, color='orange', linestyle=':', linewidth=2,
+                   label=f"±1σ = {std_yaw:.1f}°")
+        ax2.axvline(mean_yaw - std_yaw, color='orange', linestyle=':', linewidth=2)
+        
+        # Add reference line at 0° (on heading)
+        ax2.axvline(0, color='gray', linestyle='-', linewidth=1, alpha=0.5, label='0° (On Heading)')
+        
+        # Add count labels on bars
+        for i, (count, patch) in enumerate(zip(yaw_counts, yaw_patches)):
+            if count > 0:
+                height = patch.get_height()
+                ax2.text(patch.get_x() + patch.get_width()/2., height,
+                       f'{int(count)}',
+                       ha='center', va='bottom', fontsize=10, fontweight='bold')
+        
+        ax2.set_xlabel('Relative Yaw Angle [degrees]', fontsize=12)
+        ax2.set_ylabel('Number of Cases', fontsize=12)
+        ax2.set_title(f'Relative Yaw Angle Distribution (vs Mean Dive Heading)', 
+                    fontsize=13, fontweight='bold')
+        ax2.grid(True, alpha=0.3, axis='y')
+        ax2.legend(fontsize=10, loc='upper right')
+        ax2.set_xlim([-30, 30])
+        ax2.set_xticks(np.arange(-30, 30, 5))  # Major ticks every 30 degrees
+        
+        # Add text box with statistics - positioned below legend
+        yaw_stats_text = (
+            f'Relative Yaw Statistics:\n'
+            f'(n = {len(relative_yaws)} hits)\n\n'
+            f'Mean: {mean_yaw:.1f}°\n'
+            f'Median: {median_yaw:.1f}°\n'
+            f'Std Dev: {std_yaw:.1f}°\n'
+            f'Min: {np.min(relative_yaws_array):.1f}°\n'
+            f'Max: {np.max(relative_yaws_array):.1f}°\n\n'
+            f'Reference:\n'
+            f'  Mean dive heading\n'
+            f'  from all trajectories'
+        )
+        
+        # Position text box below legend in upper right
+        ax2.text(0.98, 0.58, yaw_stats_text, transform=ax2.transAxes,
+               fontsize=9, verticalalignment='top', horizontalalignment='right',
+               bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8, 
+                        edgecolor='black', linewidth=2))
+    else:
+        # No relative yaw data available
+        ax2.text(0.5, 0.5, 'No relative yaw data available', 
+                transform=ax2.transAxes, ha='center', va='center', fontsize=14)
+        ax2.set_xlabel('Relative Yaw Angle [degrees]', fontsize=12)
+        ax2.set_ylabel('Number of Cases', fontsize=12)
+        ax2.set_title(f'Relative Yaw Angle Distribution', fontsize=13, fontweight='bold')
+    
+    # ========== THIRD SUBPLOT: AIRSPEED ==========
+    if airspeeds and len(airspeeds) > 0:
+        airspeeds_array = np.array(airspeeds)
+        
+        # Convert airspeed from m/s to mph (1 m/s = 2.237 mph)
+        airspeeds_mph = airspeeds_array * 2.237
+        
+        # Calculate mean to center the 30 mph range
+        mean_airspeed_mph = np.mean(airspeeds_mph)
+        
+        # Define 30 mph range centered on mean with 5 mph bins
+        range_center = round(mean_airspeed_mph / 5) * 5  # Round to nearest 5 mph
+        range_min = range_center - 15
+        range_max = range_center + 15
+        airspeed_bin_edges = np.arange(range_min, range_max + 5, 5)
+        
+        # Create histogram
+        airspeed_counts, airspeed_bins, airspeed_patches = ax3.hist(airspeeds_mph, bins=airspeed_bin_edges, 
+                                        edgecolor='black', alpha=0.7, color='mediumseagreen')
+        
+        # Calculate statistics in mph
+        std_airspeed_mph = np.std(airspeeds_mph)
+        median_airspeed_mph = np.median(airspeeds_mph)
+        
+        # Add mean and median lines
+        ax3.axvline(mean_airspeed_mph, color='red', linestyle='--', linewidth=2, 
+                   label=f"Mean = {mean_airspeed_mph:.1f} mph")
+        ax3.axvline(median_airspeed_mph, color='green', linestyle='--', linewidth=2,
+                   label=f"Median = {median_airspeed_mph:.1f} mph")
+        ax3.axvline(mean_airspeed_mph + std_airspeed_mph, color='orange', linestyle=':', linewidth=2,
+                   label=f"±1σ = {std_airspeed_mph:.1f} mph")
+        ax3.axvline(mean_airspeed_mph - std_airspeed_mph, color='orange', linestyle=':', linewidth=2)
+        
+        # Add count labels on bars
+        for i, (count, patch) in enumerate(zip(airspeed_counts, airspeed_patches)):
+            if count > 0:
+                height = patch.get_height()
+                ax3.text(patch.get_x() + patch.get_width()/2., height,
+                       f'{int(count)}',
+                       ha='center', va='bottom', fontsize=10, fontweight='bold')
+        
+        ax3.set_xlabel('Airspeed [mph]', fontsize=12)
+        ax3.set_ylabel('Number of Cases', fontsize=12)
+        ax3.set_title(f'Airspeed at Impact Distribution', 
+                    fontsize=13, fontweight='bold')
+        ax3.grid(True, alpha=0.3, axis='y')
+        ax3.legend(fontsize=10, loc='upper right')
+        ax3.set_xlim([range_min, range_max])
+        ax3.set_xticks(np.arange(range_min, range_max + 5, 5))
+        
+        # Add text box with statistics - positioned below legend
+        airspeed_stats_text = (
+            f'Airspeed Statistics:\n'
+            f'(n = {len(airspeeds)} hits)\n\n'
+            f'Mean: {mean_airspeed_mph:.1f} mph\n'
+            f'Median: {median_airspeed_mph:.1f} mph\n'
+            f'Std Dev: {std_airspeed_mph:.1f} mph\n'
+            f'Min: {np.min(airspeeds_mph):.1f} mph\n'
+            f'Max: {np.max(airspeeds_mph):.1f} mph\n\n'
+            f'Conversion:\n'
+            f'  {mean_airspeed_mph/2.237:.1f} m/s\n'
+            f'  {mean_airspeed_mph*1.609:.1f} km/h'
+        )
+        
+        # Position text box below legend in upper right
+        ax3.text(0.98, 0.61, airspeed_stats_text, transform=ax3.transAxes,
+               fontsize=9, verticalalignment='top', horizontalalignment='right',
+               bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8, 
+                        edgecolor='black', linewidth=2))
+    else:
+        # No airspeed data available
+        ax3.text(0.5, 0.5, 'No airspeed data available', 
+                transform=ax3.transAxes, ha='center', va='center', fontsize=14)
+        ax3.set_xlabel('Airspeed [mph]', fontsize=12)
+        ax3.set_ylabel('Number of Cases', fontsize=12)
+        ax3.set_title(f'Airspeed at Impact Distribution', fontsize=13, fontweight='bold')
+    
+    plt.tight_layout()
+    
+    if interactive:
+        plt.show()
+        print("Showing interactive impact angle histogram (close window to continue)")
+    else:
+        target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
+        plot_path = output_dir / f"impact_angle_histogram{target_suffix}.png"
+        plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"Saved impact angle histogram: {plot_path}")
 
 
