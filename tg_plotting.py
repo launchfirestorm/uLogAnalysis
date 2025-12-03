@@ -242,7 +242,6 @@ def plot_3d_terminal_engagement(trajectory_data: list, out_dir: Path,
         plot_path = out_dir / f"{prefix}{target_suffix}.png"
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
-        print(f"Saved 3D trajectory plot: {plot_path}")
 
 
 def plot_roll_pitch(trajectory_data: list, out_dir: Path, 
@@ -424,7 +423,6 @@ def plot_roll_pitch(trajectory_data: list, out_dir: Path,
         plot_path = out_dir / f"{prefix}{target_suffix}.png"
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
-        print(f"Saved roll/pitch/yaw timeseries plot: {plot_path}")
 
 
 def gps_trajectory_plot(trajectory_data: list, output_dir: Path, target_selection: str,
@@ -481,7 +479,7 @@ def gps_trajectory_plot(trajectory_data: list, output_dir: Path, target_selectio
     colors = plt.cm.tab10(np.linspace(0, 1, len(trajectory_data)))
     
     file_word = "file" if len(trajectory_data) == 1 else "files"
-    print(f"\n=== Creating GPS Trajectory Plot for {len(trajectory_data)} {file_word} ===")
+    # print(f"\n=== Creating GPS Trajectory Plot for {len(trajectory_data)} {file_word} ===")
     
     # Track all impact points for zoom calculation
     all_impact_lats = []
@@ -592,12 +590,12 @@ def gps_trajectory_plot(trajectory_data: list, output_dir: Path, target_selectio
                              edgecolors='red', linewidth=2, zorder=6)
             
             # Print summary
-            if dive_lat is not None and impact_lat is not None:
-                print(f"  Processed {filename}: Dive at ({dive_lat:.7f}, {dive_lon:.7f}), Impact at ({impact_lat:.7f}, {impact_lon:.7f})")
-            elif dive_lat is not None or impact_lat is not None:
-                print(f"  Processed {filename}: Partial terminal engagement detected")
-            else:
-                print(f"  Processed {filename}: No terminal engagement detected")
+            # if dive_lat is not None and impact_lat is not None:
+            #     print(f"  Processed {filename}: Dive at ({dive_lat:.7f}, {dive_lon:.7f}), Impact at ({impact_lat:.7f}, {impact_lon:.7f})")
+            # elif dive_lat is not None or impact_lat is not None:
+            #     print(f"  Processed {filename}: Partial terminal engagement detected")
+            # else:
+            #     print(f"  Processed {filename}: No terminal engagement detected")
                 
         except Exception as e:
             print(f"  Error processing {filename} for GPS plot: {e}")
@@ -685,7 +683,6 @@ def gps_trajectory_plot(trajectory_data: list, output_dir: Path, target_selectio
         gps_plot_path = output_dir / f"{prefix}{target_suffix}.png"
         plt.savefig(gps_plot_path, dpi=150, bbox_inches="tight")
         plt.close()
-        print(f"Saved GPS trajectory plot: {gps_plot_path}")
 
 
 def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path, 
@@ -733,7 +730,7 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
         axes = axes.flatten() if n_trajectories > 1 else [axes]
     
     file_word = "file" if n_trajectories == 1 else "files"
-    print(f"\n=== Creating Accelerometer Impact Plot for {n_trajectories} {file_word} ===")
+    # print(f"\n=== Creating Accelerometer Impact Plot for {n_trajectories} {file_word} ===")
     
     plot_idx = 0  # Track actual plot index separately from loop index
     for i, traj_info in enumerate(trajectory_data):
@@ -837,7 +834,7 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
             ax.legend(lines1 + lines2, labels1 + labels2, loc='upper right', fontsize=8)
             
             impact_count = len(valid_method1) + len(valid_method2)
-            print(f"  Processed {filename}: {impact_count} impact(s) detected (M1: {len(valid_method1)}, M2: {len(valid_method2)})")
+            # print(f"  Processed {filename}: {impact_count} impact(s) detected (M1: {len(valid_method1)}, M2: {len(valid_method2)})")
             
             plot_idx += 1  # Increment only on successful plot
             
@@ -861,7 +858,6 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
         plot_path = output_dir / f"{prefix}{target_suffix}.png"
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
-        print(f"Saved Method 1 accelerometer plot: {plot_path}")
     
     # ===========================
     # Create Method 2 Plot (Acceleration Derivative)
@@ -877,7 +873,7 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
         fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows))
         axes = axes.flatten() if n_trajectories > 1 else [axes]
     
-    print(f"\n=== Creating Method 2 (Derivative) Plot for {n_trajectories} {file_word} ===")
+    # print(f"\n=== Creating Method 2 (Derivative) Plot for {n_trajectories} {file_word} ===")
     
     plot_idx = 0  # Track actual plot index separately from loop index
     for i, traj_info in enumerate(trajectory_data):
@@ -993,7 +989,6 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
         plot_path = output_dir / f"{prefix}{target_suffix}.png"
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
-        print(f"Saved Method 2 derivative plot: {plot_path}")
 
 
 def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_selection: str, interactive: bool = False):
@@ -1119,23 +1114,55 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
                     f'{int(count)}',
                     ha='center', va='bottom', fontsize=10, fontweight='bold')
     
+    # Calculate hit rate (CPA < 2m)
+    hits = np.sum(cpa_total_array < 2.0)
+    total_cases = len(cpa_total_array)
+    hit_rate = (hits / total_cases * 100) if total_cases > 0 else 0
+    
     # Add text box with simulation requirements
     mu_plus_2sigma = stat['cpa_total_mean'] + 2 * stat['cpa_total_std']
+    
+    # Check if requirements are met
+    mean_passed = stat["cpa_total_mean"] < 1.0
+    sigma_passed = mu_plus_2sigma < 2.0
+    
+    # Color coding: green for pass, red for fail
+    mean_color = 'green' if mean_passed else 'red'
+    sigma_color = 'green' if sigma_passed else 'red'
+    hit_rate_color  = 'green' if hit_rate > 90.0 else 'red'    
+
     req_text = (
         'Simulation Requirements:\n'
+        f'0-1m: Strong Hit\n'
+        f'1-2m: Hit\n'
+        f'Hit Rate > 90%\n'
         f'• Mean CPA Miss < 1.0 m\n'
         f'• μ + 2σ < 2.0 m\n\n'
-        f'Current Results:\n'
-        f'• Mean = {stat["cpa_total_mean"]:.2f} m\n'
-        f'• μ + 2σ = {mu_plus_2sigma:.2f} m\n\n'
-        f'0-1m: Strong Hit\n'
-        f'1-2m: Hit'
+        f'Current Results:\n\n\n\n'
+       
     )
     
-    # Position text box in lower right
-    ax2.text(0.98, 0.03, req_text, transform=ax2.transAxes,
-            fontsize=10, verticalalignment='bottom', horizontalalignment='right',
+    # Position text box on the right side
+    ax2.text(1.02, 0.5, req_text, transform=ax2.transAxes,
+            fontsize=10, verticalalignment='center', horizontalalignment='left',
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black', linewidth=2))
+    
+    # Add colored result text lines (positioned to align with "Current Results:" section)
+    ax2.text(1.035, 0.37, f'• Mean = {stat["cpa_total_mean"]:.2f} m', transform=ax2.transAxes,
+            fontsize=10, verticalalignment='center', horizontalalignment='left',
+            color=mean_color, fontweight='bold')
+    ax2.text(1.035, 0.34, f'• μ + 2σ = {mu_plus_2sigma:.2f} m', transform=ax2.transAxes,
+            fontsize=10, verticalalignment='center', horizontalalignment='left',
+            color=sigma_color, fontweight='bold')
+    ax2.text(1.035, 0.31, f'• Hit Rate = {hit_rate:.2f} %', transform=ax2.transAxes,
+        fontsize=10, verticalalignment='center', horizontalalignment='left',
+        color=hit_rate_color, fontweight='bold')
+    
+    # Add bold hit rate display on the right side above requirements
+    hit_rate_text = f'HIT RATE: {hit_rate:.1f}% ({hits}/{total_cases})'
+    ax2.text(1.02, 0.85, hit_rate_text, transform=ax2.transAxes,
+            fontsize=14, fontweight='bold', verticalalignment='center', horizontalalignment='left',
+            bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.9, edgecolor='black', linewidth=3))
     
     plt.tight_layout()
     
@@ -1147,7 +1174,6 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
         plot_path = output_dir / f"miss_distance_histograms{target_suffix}.png"
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
-        print(f"Saved miss distance histogram: {plot_path}")
 
 
 def plot_impact_angle_histogram(impact_angles: list, relative_yaws: list, airspeeds: list, output_dir: Path, target_selection: str, interactive: bool = False):
@@ -1223,7 +1249,7 @@ def plot_impact_angle_histogram(impact_angles: list, relative_yaws: list, airspe
     
     ax1.set_xlabel('Impact Pitch Angle [degrees]', fontsize=12)
     ax1.set_ylabel('Number of Cases', fontsize=12)
-    ax1.set_title(f'Impact Pitch Angle Distribution (Successful Hits: CPA < 2m)\n' +
+    ax1.set_title(f'Impact Pitch Angle Distribution (Successful Hits: CPA < 2m, Δt < 0.15s)\n' +
                 f'Target: {target_selection}', 
                 fontsize=13, fontweight='bold')
     ax1.grid(True, alpha=0.3, axis='y')
@@ -1246,9 +1272,9 @@ def plot_impact_angle_histogram(impact_angles: list, relative_yaws: list, airspe
         f'  +90° = Vertical dive'
     )
     
-    # Position text box below legend in upper right
-    ax1.text(0.98, 0.62, stats_text, transform=ax1.transAxes,
-           fontsize=9, verticalalignment='top', horizontalalignment='right',
+    # Position text box on the right side
+    ax1.text(1.02, 0.5, stats_text, transform=ax1.transAxes,
+           fontsize=9, verticalalignment='center', horizontalalignment='left',
            bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8, 
                     edgecolor='black', linewidth=2))
     
@@ -1311,9 +1337,9 @@ def plot_impact_angle_histogram(impact_angles: list, relative_yaws: list, airspe
             f'  from all trajectories'
         )
         
-        # Position text box below legend in upper right
-        ax2.text(0.98, 0.58, yaw_stats_text, transform=ax2.transAxes,
-               fontsize=9, verticalalignment='top', horizontalalignment='right',
+        # Position text box on the right side
+        ax2.text(1.02, 0.5, yaw_stats_text, transform=ax2.transAxes,
+               fontsize=9, verticalalignment='center', horizontalalignment='left',
                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8, 
                         edgecolor='black', linewidth=2))
     else:
@@ -1388,9 +1414,9 @@ def plot_impact_angle_histogram(impact_angles: list, relative_yaws: list, airspe
             f'  {mean_airspeed_mph*1.609:.1f} km/h'
         )
         
-        # Position text box below legend in upper right
-        ax3.text(0.98, 0.61, airspeed_stats_text, transform=ax3.transAxes,
-               fontsize=9, verticalalignment='top', horizontalalignment='right',
+        # Position text box on the right side
+        ax3.text(1.02, 0.5, airspeed_stats_text, transform=ax3.transAxes,
+               fontsize=9, verticalalignment='center', horizontalalignment='left',
                bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8, 
                         edgecolor='black', linewidth=2))
     else:
@@ -1411,6 +1437,5 @@ def plot_impact_angle_histogram(impact_angles: list, relative_yaws: list, airspe
         plot_path = output_dir / f"impact_angle_histogram{target_suffix}.png"
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
-        print(f"Saved impact angle histogram: {plot_path}")
 
 

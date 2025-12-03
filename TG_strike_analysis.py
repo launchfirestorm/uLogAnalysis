@@ -749,7 +749,7 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
                             cpa_time = distances['cpa_time_s']
                             time_diff = abs(impact_time - cpa_time)
                             
-                            if time_diff < 0.5:  # Impact within 0.5s of CPA
+                            if time_diff < 0.15:  # Impact within 0.15s of CPA
                                 # Calculate impact angle at impact point
                                 roll = data["roll_deg"][first_impact_idx]
                                 pitch = data["pitch_deg"][first_impact_idx]
@@ -920,7 +920,7 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     # Create impact angle histogram for successful hits
     if len(all_impact_angles) > 0:
         print(f"\n=== Impact Angle Analysis ===")
-        print(f"Successful hits (CPA < 2m, impact within 0.5s): {len(all_impact_angles)}")
+        print(f"Successful hits (CPA < 2m, impact within 0.15s): {len(all_impact_angles)}")
         
         # Calculate mean dive heading from all trajectories
         if len(all_dive_yaws) > 0:
@@ -962,7 +962,7 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
         plot_impact_angle_histogram(all_impact_angles, all_relative_yaws, all_airspeeds, output_dir, target_selection, interactive_3d)
     else:
         print(f"\n=== Impact Angle Analysis ===")
-        print("No successful hits found (CPA < 2m with impact within 0.5s of CPA)")
+        print("No successful hits found (CPA < 2m with impact within 0.15s of CPA)")
     
     # Combine all PNG plots into a single PDF
     combine_plots_to_pdf(output_dir, target_selection, len(trajectory_data) > 1)
@@ -1031,7 +1031,6 @@ def combine_plots_to_pdf(output_dir: Path, target_selection: str, is_batch: bool
     try:
         # Save first image and append the rest
         images[0].save(pdf_path, "PDF", resolution=100.0, save_all=True, append_images=images[1:])
-        print(f"\nCombined all plots into PDF: {pdf_path}")
     except Exception as e:
         print(f"Error creating PDF: {e}")
     finally:
