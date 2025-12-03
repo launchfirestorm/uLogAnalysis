@@ -19,7 +19,8 @@ from tg_plotting import (
     gps_trajectory_plot,
     plot_accelerometer_impacts,
     plot_miss_distance_histograms,
-    plot_impact_angle_histogram
+    plot_impact_angle_histogram,
+    plot_altitude_debug
 )
 from tg_utils import (
     quaternion_to_euler as quaternion_to_euler, 
@@ -429,12 +430,13 @@ def compute_engagement_masks(data: Dict[str, np.ndarray], pitch_threshold: float
     if first_dive_idx is not None and len(impact_indices) > 0:
         # By design, all impacts in impact_indices are after the dive
         first_impact_idx = impact_indices[0]
-        
-        # Validate timing (< 30 seconds between dive and impact)
-        timestamps = data['timestamp_us']
-        time_diff = (timestamps[first_impact_idx] - timestamps[first_dive_idx]) * 1e-6
-        if time_diff < 30.0:
-            terminal_engagement_mask[first_dive_idx:first_impact_idx+1] = True
+        terminal_engagement_mask[first_dive_idx:first_impact_idx+1] = True
+       
+        # # Validate timing (< 30 seconds between dive and impact)
+        # timestamps = data['timestamp_us']
+        # time_diff = (timestamps[first_impact_idx] - timestamps[first_dive_idx]) * 1e-6
+        # if time_diff < 30.0:
+        #     terminal_engagement_mask[first_dive_idx:first_impact_idx+1] = True
     
     # Print detection summary
     engagements = 1 if np.any(terminal_engagement_mask) else 0
@@ -665,7 +667,8 @@ def calculate_miss_distances(ulog, data: Dict[str, np.ndarray], mask: np.ndarray
 def process_multiple_logs(logs_dir: Path, output_dir: Path, 
                          pitch_threshold: float = -4.0, accel_threshold: float = 15.0, 
                          deriv_threshold: float = 2.0, alt_threshold: float = 5.0,
-                         target_selection: str = "both", interactive_3d: bool = False) -> None:
+                         target_selection: str = "both", interactive_3d: bool = False,
+                         cpa_hit_threshold: float = 3.0) -> None:
     """Process multiple log files and calculate miss distance statistics."""
     # Find all .ulg files in the logs directory and subdirectories
     log_files = list(logs_dir.rglob("*.ulg"))
@@ -678,7 +681,7 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     
     # Initialize miss distances based on target selection
     all_miss_distances = {target_selection: []}
-    all_impact_angles = []  # For successful hits (CPA < 2m with impact within 0.5s)
+    all_impact_angles = []  # For successful hits (CPA < threshold with impact within 0.15s)
     all_relative_yaws = []  # Relative yaw angles at impact for successful hits
     all_dive_yaws = []  # Collect all dive yaw values to calculate mean "true" heading
     all_airspeeds = []  # Airspeed at impact for successful hits
@@ -740,8 +743,8 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
                     print(f"    {target_name}: Impact={impact_dist:.1f}m, CPA={cpa_dist:.1f}m (true miss)")
                     all_miss_distances[target_name].append(distances)
                     
-                    # Check if this is a successful hit (CPA < 2m with impact within 0.5s of CPA)
-                    if cpa_dist < 2.0:
+                    # Check if this is a successful hit (CPA < threshold with impact within 0.15s of CPA)
+                    if cpa_dist < cpa_hit_threshold:
                         # Get timing information
                         first_impact_idx = engagement_masks.get('first_impact_idx')
                         if first_impact_idx is not None:
@@ -914,13 +917,16 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     # Create roll/pitch timeseries plot for all trajectories with offboard mode
     plot_roll_pitch(trajectory_data, output_dir, interactive_3d, target_selection)
     
+    # Create altitude debug plot to visualize dive and impact detection
+    plot_altitude_debug(trajectory_data, output_dir, target_selection, interactive_3d)
+    
     # Create miss distance histogram plots
-    plot_miss_distance_histograms(stats_output, output_dir, target_selection, interactive_3d)
+    plot_miss_distance_histograms(stats_output, output_dir, target_selection, interactive_3d, cpa_hit_threshold)
     
     # Create impact angle histogram for successful hits
     if len(all_impact_angles) > 0:
         print(f"\n=== Impact Angle Analysis ===")
-        print(f"Successful hits (CPA < 2m, impact within 0.15s): {len(all_impact_angles)}")
+        print(f"Successful hits (CPA < {cpa_hit_threshold}m, impact within 0.15s): {len(all_impact_angles)}")
         
         # Calculate mean dive heading from all trajectories
         if len(all_dive_yaws) > 0:
@@ -959,10 +965,10 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
             print(f"Median impact angle: {np.median(all_impact_angles):.1f}°")
             print(f"Std deviation: {np.std(all_impact_angles):.1f}°")
         
-        plot_impact_angle_histogram(all_impact_angles, all_relative_yaws, all_airspeeds, output_dir, target_selection, interactive_3d)
+        plot_impact_angle_histogram(all_impact_angles, all_relative_yaws, all_airspeeds, output_dir, target_selection, interactive_3d, cpa_hit_threshold)
     else:
         print(f"\n=== Impact Angle Analysis ===")
-        print("No successful hits found (CPA < 2m with impact within 0.15s of CPA)")
+        print(f"No successful hits found (CPA < {cpa_hit_threshold}m with impact within 0.15s of CPA)")
     
     # Combine all PNG plots into a single PDF
     combine_plots_to_pdf(output_dir, target_selection, len(trajectory_data) > 1)
@@ -1039,6 +1045,83 @@ def combine_plots_to_pdf(output_dir: Path, target_selection: str, is_batch: bool
             img.close()
 
 
+def process_logs_by_dive_angle(base_dir: Path, output_base_dir: Path,
+                              pitch_threshold: float = -4.0, accel_threshold: float = 15.0,
+                              deriv_threshold: float = 2.0, alt_threshold: float = 5.0,
+                              target_selection: str = "Van", interactive_3d: bool = False,
+                              cpa_hit_threshold: float = 3.0) -> None:
+    """Process logs organized by dive angle subdirectories.
+    
+    Expects directory structure like:
+        base_dir/
+            10Deg/
+                log1.ulg
+                log2.ulg
+            15Deg/
+                log3.ulg
+            ...
+    
+    Creates separate analysis outputs for each dive angle.
+    """
+    # Find all subdirectories that match the pattern (e.g., 10Deg, 15Deg, etc.)
+    import re
+    angle_pattern = re.compile(r'(\d+)Deg', re.IGNORECASE)
+    
+    angle_dirs = []
+    for item in base_dir.iterdir():
+        if item.is_dir():
+            match = angle_pattern.match(item.name)
+            if match:
+                angle_value = int(match.group(1))
+                angle_dirs.append((angle_value, item))
+    
+    if not angle_dirs:
+        print(f"No dive angle subdirectories found in {base_dir}")
+        print("Expected subdirectories like: 10Deg, 15Deg, 20Deg, etc.")
+        return
+    
+    # Sort by angle value
+    angle_dirs.sort(key=lambda x: x[0])
+    
+    print(f"\n{'='*80}")
+    print(f"DIVE ANGLE BATCH PROCESSING")
+    print(f"{'='*80}")
+    print(f"Found {len(angle_dirs)} dive angle groups: {[f'{a}°' for a, _ in angle_dirs]}")
+    print(f"Target: {target_selection}")
+    print(f"Base output directory: {output_base_dir}")
+    print(f"{'='*80}\n")
+    
+    # Process each dive angle group
+    for angle_value, angle_dir in angle_dirs:
+        print(f"\n{'#'*80}")
+        print(f"# Processing Dive Angle: {angle_value}° ({angle_dir.name})")
+        print(f"{'#'*80}\n")
+        
+        # Create output subdirectory for this angle
+        angle_output_dir = output_base_dir / f"{angle_value}Deg"
+        angle_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Process all logs in this angle directory
+        process_multiple_logs(angle_dir, angle_output_dir,
+                            pitch_threshold, accel_threshold, deriv_threshold, alt_threshold,
+                            target_selection, interactive_3d, cpa_hit_threshold)
+        
+        print(f"\nCompleted {angle_value}° dive angle analysis")
+        print(f"Results saved to: {angle_output_dir}")
+    
+    print(f"\n{'='*80}")
+    print(f"ALL DIVE ANGLES PROCESSED")
+    print(f"{'='*80}")
+    print(f"Summary:")
+    for angle_value, _ in angle_dirs:
+        angle_output_dir = output_base_dir / f"{angle_value}Deg"
+        target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
+        pdf_file = angle_output_dir / f"combined_analysis{target_suffix}.pdf"
+        if pdf_file.exists():
+            print(f"  {angle_value}°: {pdf_file}")
+    print(f"{'='*80}\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Analyze terminal engagement (dive-to-impact) segments from PX4 flight logs.")
     parser.add_argument("--ulog", type=Path, help="Path to PX4 .ulg log file (required for single file mode)")
@@ -1052,6 +1135,8 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Print debug information about available ULog datasets and fields")
     parser.add_argument("--interactive-3d", action="store_true", help="Show interactive 3D plots that can be rotated and zoomed (requires display)")
     parser.add_argument("--target", choices=["Container", "Van"], required=True, help="Target selection: 'Container' or 'Van' (required)")
+    parser.add_argument("--by-dive-angle", action="store_true", help="Process logs grouped by dive angle subdirectories (e.g., 10Deg, 15Deg, etc.)")
+    parser.add_argument("--cpa-hit-threshold", type=float, default=3.0, help="CPA threshold for successful hit detection (m). Default 3.0")
     
     args = parser.parse_args()
     
@@ -1070,10 +1155,17 @@ def main():
         if not args.logs_dir.exists():
             raise SystemExit(f"Logs directory not found: {args.logs_dir}")
         
-        print(f"Batch processing mode: analyzing all .ulg files in {args.logs_dir}")
-        process_multiple_logs(args.logs_dir, args.output, 
-                            args.pitch_threshold, args.accel_threshold, args.deriv_threshold, args.alt_threshold,
-                            args.target, args.interactive_3d)
+        if args.by_dive_angle:
+            # Process logs grouped by dive angle subdirectories
+            process_logs_by_dive_angle(args.logs_dir, args.output,
+                                      args.pitch_threshold, args.accel_threshold, args.deriv_threshold, args.alt_threshold,
+                                      args.target, args.interactive_3d, args.cpa_hit_threshold)
+        else:
+            # Standard batch processing (all files in one group)
+            print(f"Batch processing mode: analyzing all .ulg files in {args.logs_dir}")
+            process_multiple_logs(args.logs_dir, args.output, 
+                                args.pitch_threshold, args.accel_threshold, args.deriv_threshold, args.alt_threshold,
+                                args.target, args.interactive_3d, args.cpa_hit_threshold)
         return
 
     # Single file processing mode (original behavior)

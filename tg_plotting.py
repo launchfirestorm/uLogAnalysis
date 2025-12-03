@@ -991,7 +991,7 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
         plt.close()
 
 
-def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_selection: str, interactive: bool = False):
+def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_selection: str, interactive: bool = False, cpa_hit_threshold: float = 3.0):
     """Create histogram plots for miss distance distributions.
     
     Creates two histogram subplots:
@@ -1114,8 +1114,8 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
                     f'{int(count)}',
                     ha='center', va='bottom', fontsize=10, fontweight='bold')
     
-    # Calculate hit rate (CPA < 2m)
-    hits = np.sum(cpa_total_array < 2.0)
+    # Calculate hit rate (CPA < threshold)
+    hits = np.sum(cpa_total_array < cpa_hit_threshold)
     total_cases = len(cpa_total_array)
     hit_rate = (hits / total_cases * 100) if total_cases > 0 else 0
     
@@ -1176,11 +1176,11 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
         plt.close()
 
 
-def plot_impact_angle_histogram(impact_angles: list, relative_yaws: list, airspeeds: list, output_dir: Path, target_selection: str, interactive: bool = False):
+def plot_impact_angle_histogram(impact_angles: list, relative_yaws: list, airspeeds: list, output_dir: Path, target_selection: str, interactive: bool = False, cpa_hit_threshold: float = 3.0):
     """Create triple histogram plot for impact angle, relative yaw, and airspeed distribution.
     
     Shows the distribution of aircraft orientation angles and airspeed at impact for successful hits
-    (cases where 3D miss distance < 2m and impact detected within 0.5s of CPA).
+    (cases where 3D miss distance < threshold and impact detected within 0.15s of CPA).
     
     Args:
         impact_angles: List of impact pitch angles in degrees
@@ -1249,7 +1249,7 @@ def plot_impact_angle_histogram(impact_angles: list, relative_yaws: list, airspe
     
     ax1.set_xlabel('Impact Pitch Angle [degrees]', fontsize=12)
     ax1.set_ylabel('Number of Cases', fontsize=12)
-    ax1.set_title(f'Impact Pitch Angle Distribution (Successful Hits: CPA < 2m, Δt < 0.15s)\n' +
+    ax1.set_title(f'Impact Pitch Angle Distribution (Successful Hits: CPA < {cpa_hit_threshold}m, Δt < 0.15s)\n' +
                 f'Target: {target_selection}', 
                 fontsize=13, fontweight='bold')
     ax1.grid(True, alpha=0.3, axis='y')
@@ -1437,5 +1437,166 @@ def plot_impact_angle_histogram(impact_angles: list, relative_yaws: list, airspe
         plot_path = output_dir / f"impact_angle_histogram{target_suffix}.png"
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
+
+
+def plot_altitude_debug(trajectory_data: list, output_dir: Path, 
+                       target_selection: str = "Van", interactive: bool = False):
+    """Debug plot showing altitude trajectories with dive and impact detection markers.
+    
+    Creates one subplot per trajectory showing:
+    - Altitude AGL over time
+    - Dive start markers (pitch threshold crossed)
+    - Impact detection markers (all three methods)
+    - Terminal engagement segment highlighting
+    
+    Args:
+        trajectory_data: List of dicts with 'ulog', 'data', 'mask', 'engagement_masks', 'filename'
+        output_dir: Output directory for the plot
+        target_selection: Target name for filename suffix
+        interactive: Whether to show interactive plot
+    """
+    if not matplotlib_available:
+        print("matplotlib not available, skipping altitude debug plot.")
+        return
+    
+    n_trajectories = len(trajectory_data)
+    if n_trajectories == 0:
+        print("No trajectory data available for altitude debug plot.")
+        return
+    
+    # Calculate grid dimensions for subplots
+    if n_trajectories == 1:
+        nrows, ncols = 1, 1
+        figsize = (14, 6)
+    elif n_trajectories <= 4:
+        nrows, ncols = 2, 2
+        figsize = (16, 10)
+    elif n_trajectories <= 6:
+        nrows, ncols = 2, 3
+        figsize = (18, 10)
+    elif n_trajectories <= 9:
+        nrows, ncols = 3, 3
+        figsize = (18, 14)
+    elif n_trajectories <= 12:
+        nrows, ncols = 3, 4
+        figsize = (20, 14)
+    elif n_trajectories <= 16:
+        nrows, ncols = 4, 4
+        figsize = (20, 16)
+    elif n_trajectories <= 20:
+        nrows, ncols = 4, 5
+        figsize = (22, 16)
+    elif n_trajectories <= 25:
+        nrows, ncols = 5, 5
+        figsize = (22, 18)
+    else:
+        nrows, ncols = 6, 5
+        figsize = (22, 20)
+    
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+    if n_trajectories == 1:
+        axes = np.array([axes])
+    axes = axes.flatten()
+    
+    fig.suptitle(f'Altitude Trajectory Debug - Dive & Impact Detection\nTarget: {target_selection}', 
+                 fontsize=16, fontweight='bold')
+    
+    for idx, traj in enumerate(trajectory_data):
+        ax = axes[idx]
+        data = traj['data']
+        mask = traj['mask']
+        engagement_masks = traj['engagement_masks']
+        filename = traj['filename']
+        
+        # Get time array in seconds (relative to start)
+        time_s = (data['timestamp_us'] - data['timestamp_us'][0]) * 1e-6
+        altitude_agl = data['altitude_agl']
+        pitch_deg = data['pitch_deg']
+        
+        # Plot altitude trajectory
+        ax.plot(time_s, altitude_agl, 'b-', linewidth=1.5, label='Altitude AGL', alpha=0.7)
+        
+        # Highlight terminal engagement segment if it exists
+        if np.any(mask):
+            engagement_indices = np.where(mask)[0]
+            ax.fill_between(time_s[engagement_indices], 0, altitude_agl[engagement_indices],
+                           color='yellow', alpha=0.2, label='Terminal Engagement')
+        
+        # Mark dive start
+        first_dive_idx = engagement_masks.get('first_dive_idx')
+        if first_dive_idx is not None:
+            ax.axvline(time_s[first_dive_idx], color='green', linestyle='--', 
+                      linewidth=2, label=f'Dive Start (pitch < thresh)')
+            ax.plot(time_s[first_dive_idx], altitude_agl[first_dive_idx], 
+                   'g^', markersize=12, markeredgewidth=2, markeredgecolor='darkgreen')
+        
+        # Mark impact (first impact)
+        first_impact_idx = engagement_masks.get('first_impact_idx')
+        if first_impact_idx is not None:
+            ax.axvline(time_s[first_impact_idx], color='red', linestyle='--', 
+                      linewidth=2, label='Impact (used)')
+            ax.plot(time_s[first_impact_idx], altitude_agl[first_impact_idx], 
+                   'rv', markersize=12, markeredgewidth=2, markeredgecolor='darkred')
+        
+        # Mark all detected impacts (Method 1: acceleration magnitude)
+        if 'method1_impact_indices' in data:
+            method1_indices = data['method1_impact_indices']
+            if len(method1_indices) > 0:
+                ax.plot(time_s[method1_indices], altitude_agl[method1_indices], 
+                       'o', color='orange', markersize=6, label='Method 1 (accel mag)', alpha=0.6)
+        
+        # Mark all detected impacts (Method 2: acceleration derivative)
+        if 'method2_impact_indices' in data:
+            method2_indices = data['method2_impact_indices']
+            if len(method2_indices) > 0:
+                ax.plot(time_s[method2_indices], altitude_agl[method2_indices], 
+                       's', color='purple', markersize=6, label='Method 2 (accel deriv)', alpha=0.6)
+        
+        # Mark fallback impact if used
+        if 'fallback_impact_indices' in data:
+            fallback_indices = data['fallback_impact_indices']
+            if len(fallback_indices) > 0:
+                ax.plot(time_s[fallback_indices], altitude_agl[fallback_indices], 
+                       'd', color='cyan', markersize=8, label='Method 3 (fallback)', alpha=0.8)
+        
+        # Add horizontal line at z=0 (ground level)
+        ax.axhline(0, color='brown', linestyle='-', linewidth=2, alpha=0.5, label='Ground (0m AGL)')
+        
+        # Calculate engagement status
+        has_engagement = np.any(mask)
+        engagement_status = "✓ Engaged" if has_engagement else "✗ No Engagement"
+        status_color = 'green' if has_engagement else 'red'
+        
+        # Set labels and title
+        ax.set_xlabel('Time [s]', fontsize=9)
+        ax.set_ylabel('Altitude AGL [m]', fontsize=9)
+        ax.set_title(f'{filename}\n{engagement_status}', 
+                    fontsize=9, fontweight='bold', color=status_color)
+        ax.grid(True, alpha=0.3)
+        
+        # Add legend (only for first subplot to avoid clutter)
+        if idx == 0:
+            ax.legend(fontsize=7, loc='upper right')
+        
+        # Set reasonable y-axis limits
+        y_min = min(-5, np.min(altitude_agl) - 5)
+        y_max = max(100, np.max(altitude_agl) + 10)
+        ax.set_ylim([y_min, y_max])
+    
+    # Hide unused subplots
+    for idx in range(n_trajectories, len(axes)):
+        axes[idx].set_visible(False)
+    
+    plt.tight_layout()
+    
+    if interactive:
+        plt.show()
+        print("Showing interactive altitude debug plot (close window to continue)")
+    else:
+        target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
+        plot_path = output_dir / f"altitude_debug{target_suffix}.png"
+        plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"Saved altitude debug plot: {plot_path}")
 
 
