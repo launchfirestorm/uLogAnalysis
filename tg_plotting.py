@@ -1034,9 +1034,10 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
     impact_total_array = np.array([d['impact_total'] for d in distance_dicts])
     cpa_ground_array = np.array([d['cpa_ground'] for d in distance_dicts])
     cpa_total_array = np.array([d['cpa_total'] for d in distance_dicts])
+    cpa_alt_diff_array = np.array([d['cpa_alt_diff'] for d in distance_dicts])
     
-    # Create figure with 2 subplots (2 rows)
-    fig, axes = plt.subplots(2, 1, figsize=(10, 10))
+    # Create figure with 3 subplots (3 rows)
+    fig, axes = plt.subplots(3, 1, figsize=(10, 15))
     
     # Define bin edges for histograms (0-20m range with 2m bins)
     bin_edges = np.arange(0, 21, 1)
@@ -1123,12 +1124,66 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
                     f'{int(count)}',
                     ha='center', va='bottom', fontsize=10, fontweight='bold')
     
+    # Subplot 3: Altitude Miss Distance (Vertical Component of CPA)
+    ax3 = axes[2]
+    
+    # Calculate statistics for altitude miss
+    cpa_alt_diff_mean = np.mean(cpa_alt_diff_array)
+    cpa_alt_diff_std = np.std(cpa_alt_diff_array)
+    
+    # Define bin edges for altitude (centered around 0, symmetric range)
+    max_alt_range = max(abs(np.min(cpa_alt_diff_array)), abs(np.max(cpa_alt_diff_array)))
+    max_alt_range = max(5, max_alt_range)  # At least ±5m range
+    alt_bin_edges = np.arange(-max_alt_range, max_alt_range + 1, 1)
+    
+    counts3, bins3, patches3 = ax3.hist(cpa_alt_diff_array, bins=alt_bin_edges, 
+                                         edgecolor='black', alpha=0.7, color='purple')
+    
+    # Color bins within ±1m (target height range)
+    for i, patch in enumerate(patches3):
+        bin_start = bins3[i]
+        bin_end = bins3[i+1]
+        if bin_start >= -1.0 and bin_end <= 1.0:
+            # Within ±1m of target center
+            patch.set_facecolor('darkgreen')
+            patch.set_alpha(0.8)
+        elif (bin_start >= 2.0 and bin_end <= 3.0) :
+            # Within 2-3m of target center
+            patch.set_facecolor('lightgreen')
+            patch.set_alpha(0.8)
+        else:
+            patch.set_facecolor('darkred')
+            patch.set_alpha(0.7)
+    
+    ax3.axvline(cpa_alt_diff_mean, color='red', linestyle='--', linewidth=2, 
+                label=f"Mean = {cpa_alt_diff_mean:.2f}m")
+    ax3.axvline(cpa_alt_diff_mean + cpa_alt_diff_std, 
+                color='orange', linestyle=':', linewidth=2, label=f"±1σ = {cpa_alt_diff_std:.2f}m")
+    ax3.axvline(cpa_alt_diff_mean - cpa_alt_diff_std, 
+                color='orange', linestyle=':', linewidth=2)
+    ax3.axvline(0, color='green', linestyle='-', linewidth=1.5, alpha=0.5, label='Target Center')
+    
+    ax3.set_xlabel('Altitude Miss Distance (CPA) [m]', fontsize=12)
+    ax3.set_ylabel('Number of Cases', fontsize=12)
+    ax3.set_title('Altitude Miss Distance Distribution (Vertical Component)', 
+                  fontsize=13, fontweight='bold')
+    ax3.grid(True, alpha=0.3, axis='y')
+    ax3.legend(fontsize=10)
+    
+    # Add count labels on bars
+    for i, (count, patch) in enumerate(zip(counts3, patches3)):
+        if count > 0:
+            height = patch.get_height()
+            ax3.text(patch.get_x() + patch.get_width()/2., height,
+                    f'{int(count)}',
+                    ha='center', va='bottom', fontsize=10, fontweight='bold')
+    
     # Calculate hit rate (successful hits that met both CPA and time criteria)
     hits = num_successful_hits
     total_cases = len(cpa_total_array)
     hit_rate = (hits / total_cases * 100) if total_cases > 0 else 0
     
-    # Add text box with simulation requirements
+    # Add text box with simulation requirements (on third subplot)
     mu_plus_1sigma = stat['cpa_total_mean'] +  stat['cpa_total_std']
     
     # Check if requirements are met
@@ -1151,25 +1206,25 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
        
     )
     
-    # Position text box on the right side
-    ax2.text(1.02, 0.5, req_text, transform=ax2.transAxes,
+    # Position text box on the right side of third subplot
+    ax3.text(1.02, 0.5, req_text, transform=ax3.transAxes,
             fontsize=10, verticalalignment='center', horizontalalignment='left',
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8, edgecolor='black', linewidth=2))
     
     # Add colored result text lines (positioned to align with "Current Results:" section)
-    ax2.text(1.035, 0.37, f'• Mean = {stat["cpa_total_mean"]:.2f} m', transform=ax2.transAxes,
+    ax3.text(1.035, 0.37, f'• Mean = {stat["cpa_total_mean"]:.2f} m', transform=ax3.transAxes,
             fontsize=10, verticalalignment='center', horizontalalignment='left',
             color=mean_color, fontweight='bold')
-    ax2.text(1.035, 0.34, f'• μ + 1σ = {mu_plus_1sigma:.2f} m', transform=ax2.transAxes,
+    ax3.text(1.035, 0.34, f'• μ + 1σ = {mu_plus_1sigma:.2f} m', transform=ax3.transAxes,
             fontsize=10, verticalalignment='center', horizontalalignment='left',
             color=sigma_color, fontweight='bold')
-    ax2.text(1.035, 0.31, f'• Hit Rate = {hit_rate:.2f} %', transform=ax2.transAxes,
+    ax3.text(1.035, 0.31, f'• Hit Rate = {hit_rate:.2f} %', transform=ax3.transAxes,
         fontsize=10, verticalalignment='center', horizontalalignment='left',
         color=hit_rate_color, fontweight='bold')
     
     # Add bold hit rate display on the right side above requirements
     hit_rate_text = f'HIT RATE: {hit_rate:.1f}% ({hits}/{total_cases})'
-    ax2.text(1.02, 0.85, hit_rate_text, transform=ax2.transAxes,
+    ax3.text(1.02, 0.85, hit_rate_text, transform=ax3.transAxes,
             fontsize=14, fontweight='bold', verticalalignment='center', horizontalalignment='left',
             bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.9, edgecolor='black', linewidth=3))
     
@@ -1658,8 +1713,16 @@ def plot_dive_angle_summary(angle_summary_data: list, output_dir: Path, target_s
             hit_rate = 0
         hit_rates.append(hit_rate)
     
-    # Create figure with 2 subplots
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
+    # Extract altitude data if available
+    mean_altitudes = [d.get('mean_altitude', None) for d in angle_summary_data]
+    std_altitudes = [d.get('std_altitude', None) for d in angle_summary_data]
+    has_altitude_data = any(a is not None for a in mean_altitudes)
+    
+    # Create figure with 3 subplots if altitude data available, otherwise 2
+    if has_altitude_data:
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 14))
+    else:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
     
     # Subplot 1: Hit Rate vs Dive Angle
     ax1.plot(angles, hit_rates, 'o-', color='steelblue', linewidth=2, markersize=8, label='Hit Rate')
@@ -1704,6 +1767,27 @@ def plot_dive_angle_summary(angle_summary_data: list, output_dir: Path, target_s
     ax2.legend(fontsize=10)
     ax2.set_xticks(angles)
     ax2.set_ylim(bottom=0)
+    
+    # Subplot 3: Mean Altitude Miss Distance vs Dive Angle (if data available)
+    if has_altitude_data:
+        ax3.errorbar(angles, mean_altitudes, yerr=std_altitudes, fmt='o-', color='purple', 
+                    linewidth=2, markersize=8, capsize=5, label='Mean Altitude Miss ± 1σ')
+        ax3.axhline(y=0, color='green', linestyle='--', linewidth=2, 
+                   alpha=0.7, label='Target Center')
+        
+        # Add data labels with mean altitude and sample count
+        for angle, mean_alt, count in zip(angles, mean_altitudes, counts):
+            if mean_alt is not None:
+                ax3.text(angle, mean_alt + 0.3, f'{mean_alt:.1f}m', 
+                        ha='center', va='bottom', fontsize=10, fontweight='bold')
+        
+        ax3.set_xlabel('Dive Angle [degrees]', fontsize=12)
+        ax3.set_ylabel('Mean Altitude Miss Distance [m]', fontsize=12)
+        ax3.set_title(f'Mean Altitude Miss Distance vs Dive Angle\nTarget: {target_selection}', 
+                     fontsize=13, fontweight='bold')
+        ax3.grid(True, alpha=0.3)
+        ax3.legend(fontsize=10)
+        ax3.set_xticks(angles)
     
     plt.tight_layout()
     
@@ -2059,7 +2143,7 @@ def plot_cpa_miss_components(output_base_dir: Path, target_selection: str, angle
         # Draw target rectangle (5m wide horizontally, 2m tall vertically)
         # Centered at 1m altitude (Van target altitude)
         target_center_alt = 1.0  # Target altitude for Van
-        target_rect = Rectangle((-2.5, target_center_alt - 1), 5, 2, fill=True, facecolor='blue', 
+        target_rect = Rectangle((0, target_center_alt - 1), 5, 2, fill=True, facecolor='blue', 
                                edgecolor='darkblue', linewidth=2, alpha=0.3, 
                                label='Target (5m×2m)', zorder=6)
         ax.add_patch(target_rect)
@@ -2151,6 +2235,15 @@ def create_comprehensive_pdf(output_base_dir: Path, target_selection: str, angle
     if components_plot.exists():
         plot_files.append(components_plot)
     
+    # Add setpoint tracking analysis plots
+    pitch_tracking = output_base_dir / f"setpoint_tracking_pitch{target_suffix}.png"
+    if pitch_tracking.exists():
+        plot_files.append(pitch_tracking)
+    
+    roll_tracking = output_base_dir / f"setpoint_tracking_roll{target_suffix}.png"
+    if roll_tracking.exists():
+        plot_files.append(roll_tracking)
+    
     # Add histogram plots for each dive angle
     for angle_value, _ in sorted(angle_dirs, key=lambda x: x[0]):
         angle_output_dir = output_base_dir / f"{angle_value}Deg"
@@ -2194,9 +2287,235 @@ def create_comprehensive_pdf(output_base_dir: Path, target_selection: str, angle
         print(f"Created comprehensive PDF: {pdf_path}")
     except Exception as e:
         print(f"Error creating comprehensive PDF: {e}")
-    finally:
-        # Close all images
-        for img in images:
-            img.close()
+
+
+def plot_setpoint_tracking_analysis(output_base_dir: Path, target_selection: str, angle_dirs: list,
+                                    interactive: bool = False):
+    """Create detailed setpoint tracking plots for pitch and roll during offboard mode.
+    
+    Analyzes the 10° and 20° dive cases, showing the best hit and 5 worst misses for each.
+    
+    Args:
+        output_base_dir: Base output directory containing angle subdirectories
+        target_selection: Target name
+        angle_dirs: List of tuples (angle_value, angle_dir_path)
+        interactive: Whether to show interactive plot
+    """
+    if not matplotlib_available:
+        print("matplotlib not available, skipping setpoint tracking analysis.")
+        return
+        
+    try:
+        from matplotlib import pyplot as plt
+    except ImportError:
+        print("matplotlib not available, skipping setpoint tracking analysis.")
+        return
+    
+    # Filter to only 10° and 20° cases
+    target_angles = [10, 20]
+    angle_dirs_filtered = [(angle, path) for angle, path in angle_dirs if angle in target_angles]
+    
+    if len(angle_dirs_filtered) == 0:
+        print("No 10° or 20° dive angle data found for setpoint tracking analysis.")
+        return
+    
+    # Collect data for each angle
+    tracking_data = {}
+    
+    for angle_value, angle_dir in angle_dirs_filtered:
+        angle_output_dir = output_base_dir / f"{angle_value}Deg"
+        target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
+        results_file = angle_output_dir / f"log_analysis_results{target_suffix}.csv"
+        
+        if not results_file.exists():
+            continue
+        
+        # Read CPA values and filenames
+        log_data = []
+        try:
+            import csv
+            with open(results_file, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row['Status'] == 'Success':
+                        cpa_col = f'{target_selection}_CPA_Total_m'
+                        if cpa_col in row and row[cpa_col]:
+                            try:
+                                cpa_value = float(row[cpa_col])
+                                filename = row['File']
+                                log_data.append({
+                                    'filename': filename,
+                                    'cpa': cpa_value,
+                                    'path': angle_dir / filename
+                                })
+                            except (ValueError, KeyError):
+                                pass
+        except Exception as e:
+            print(f"Warning: Could not read log data for {angle_value}°: {e}")
+            continue
+        
+        if len(log_data) == 0:
+            continue
+        
+        # Sort by CPA (best to worst)
+        log_data.sort(key=lambda x: x['cpa'])
+        
+        # Select best hit (minimum CPA) and 5 worst misses (maximum CPA)
+        selected_logs = []
+        if len(log_data) > 0:
+            selected_logs.append(('Best Hit', log_data[0]))
+        if len(log_data) >= 6:
+            # Get 5 worst misses
+            for i, log in enumerate(log_data[-5:], 1):
+                selected_logs.append((f'Worst Miss #{i}', log))
+        elif len(log_data) > 1:
+            # If less than 6 logs, get all remaining as worst misses
+            for i, log in enumerate(log_data[1:], 1):
+                selected_logs.append((f'Miss #{i}', log))
+        
+        tracking_data[angle_value] = selected_logs
+    
+    if len(tracking_data) == 0:
+        print("No tracking data collected for setpoint analysis.")
+        return
+    
+    # Create pitch tracking plot (12 subplots: 6 for 10°, 6 for 20°)
+    fig_pitch, axes_pitch = plt.subplots(6, 2, figsize=(16, 24), sharey=True)
+    fig_pitch.suptitle(f'Pitch Setpoint Tracking Analysis - Target: {target_selection}', 
+                       fontsize=16, fontweight='bold')
+    
+    # Create roll tracking plot (12 subplots: 6 for 10°, 6 for 20°)
+    fig_roll, axes_roll = plt.subplots(6, 2, figsize=(16, 24), sharey=True)
+    fig_roll.suptitle(f'Roll Setpoint Tracking Analysis - Target: {target_selection}',
+                      fontsize=16, fontweight='bold')
+    
+    # Process each angle
+    for col_idx, angle_value in enumerate(target_angles):
+        if angle_value not in tracking_data:
+            # Hide unused subplots
+            for row_idx in range(6):
+                axes_pitch[row_idx, col_idx].set_visible(False)
+                axes_roll[row_idx, col_idx].set_visible(False)
+            continue
+        
+        selected_logs = tracking_data[angle_value]
+        
+        # Plot each selected log
+        for row_idx in range(6):
+            ax_pitch = axes_pitch[row_idx, col_idx]
+            ax_roll = axes_roll[row_idx, col_idx]
+            
+            if row_idx < len(selected_logs):
+                label, log_info = selected_logs[row_idx]
+                filename = log_info['filename']
+                cpa = log_info['cpa']
+                log_path = log_info['path']
+                
+                try:
+                    # Load and process the log
+                    from TG_strike_analysis import load_log, extract_position_attitude
+                    ulog = load_log(log_path)
+                    data = extract_position_attitude(ulog)
+                    
+                    # Find offboard mode segments
+                    offboard_mask = data.get('offboard_mode', np.zeros(len(data['timestamp_us']), dtype=bool))
+                    
+                    if np.any(offboard_mask):
+                        # Get time array (relative to start of offboard)
+                        offboard_indices = np.where(offboard_mask)[0]
+                        first_offboard = offboard_indices[0]
+                        time_array = (data['timestamp_us'] - data['timestamp_us'][first_offboard]) * 1e-6
+                        
+                        # Extract pitch data
+                        pitch_actual = data['pitch_deg']
+                        pitch_sp = data['pitch_sp_deg']
+                        
+                        # Extract roll data
+                        roll_actual = data['roll_deg']
+                        roll_sp = data['roll_sp_deg']
+                        
+                        # Calculate L1 errors (only during offboard)
+                        pitch_error = pitch_actual[offboard_mask] - pitch_sp[offboard_mask]
+                        roll_error = roll_actual[offboard_mask] - roll_sp[offboard_mask]
+                        
+                        # Remove NaN values before calculating L1 error
+                        pitch_error_valid = pitch_error[~np.isnan(pitch_error)]
+                        roll_error_valid = roll_error[~np.isnan(roll_error)]
+                        pitch_l1_error = np.mean(np.abs(pitch_error_valid)) if len(pitch_error_valid) > 0 else 0.0
+                        roll_l1_error = np.mean(np.abs(roll_error_valid)) if len(roll_error_valid) > 0 else 0.0
+                        
+                        # Plot pitch tracking (green to match combined RPY plot)
+                        ax_pitch.plot(time_array[offboard_mask], pitch_actual[offboard_mask], 
+                                     'g-', linewidth=2, label='Actual', alpha=0.8)
+                        ax_pitch.plot(time_array[offboard_mask], pitch_sp[offboard_mask], 
+                                     'g--', linewidth=2, label='Setpoint', alpha=0.8)
+                        ax_pitch.fill_between(time_array[offboard_mask], 
+                                             pitch_actual[offboard_mask], 
+                                             pitch_sp[offboard_mask],
+                                             alpha=0.2, color='green')
+                        ax_pitch.set_xlabel('Time [s]', fontsize=10)
+                        ax_pitch.set_ylabel('Pitch [deg]', fontsize=10)
+                        ax_pitch.set_title(f'{angle_value}° - {label}\nCPA: {cpa:.2f}m | L1 Error: {pitch_l1_error:.2f}°',
+                                          fontsize=11, fontweight='bold')
+                        ax_pitch.grid(True, alpha=0.3)
+                        ax_pitch.legend(fontsize=9, loc='best')
+                        
+                        # Plot roll tracking (blue to match combined RPY plot)
+                        ax_roll.plot(time_array[offboard_mask], roll_actual[offboard_mask], 
+                                    'b-', linewidth=2, label='Actual', alpha=0.8)
+                        ax_roll.plot(time_array[offboard_mask], roll_sp[offboard_mask], 
+                                    'b--', linewidth=2, label='Setpoint', alpha=0.8)
+                        ax_roll.fill_between(time_array[offboard_mask], 
+                                            roll_actual[offboard_mask], 
+                                            roll_sp[offboard_mask],
+                                            alpha=0.2, color='blue')
+                        ax_roll.set_xlabel('Time [s]', fontsize=10)
+                        ax_roll.set_ylabel('Roll [deg]', fontsize=10)
+                        ax_roll.set_title(f'{angle_value}° - {label}\nCPA: {cpa:.2f}m | L1 Error: {roll_l1_error:.2f}°',
+                                         fontsize=11, fontweight='bold')
+                        ax_roll.grid(True, alpha=0.3)
+                        ax_roll.legend(fontsize=9, loc='best')
+                    else:
+                        ax_pitch.text(0.5, 0.5, 'No Offboard Mode', transform=ax_pitch.transAxes,
+                                     ha='center', va='center', fontsize=12)
+                        ax_pitch.set_title(f'{angle_value}° - {label}\nCPA: {cpa:.2f}m', fontsize=11)
+                        ax_roll.text(0.5, 0.5, 'No Offboard Mode', transform=ax_roll.transAxes,
+                                    ha='center', va='center', fontsize=12)
+                        ax_roll.set_title(f'{angle_value}° - {label}\nCPA: {cpa:.2f}m', fontsize=11)
+                        
+                except Exception as e:
+                    print(f"Warning: Could not process {filename}: {e}")
+                    ax_pitch.text(0.5, 0.5, f'Error loading\n{filename}', 
+                                 transform=ax_pitch.transAxes, ha='center', va='center', fontsize=10)
+                    ax_pitch.set_title(f'{angle_value}° - {label}', fontsize=11)
+                    ax_roll.text(0.5, 0.5, f'Error loading\n{filename}', 
+                                transform=ax_roll.transAxes, ha='center', va='center', fontsize=10)
+                    ax_roll.set_title(f'{angle_value}° - {label}', fontsize=11)
+            else:
+                # Hide unused subplot
+                ax_pitch.set_visible(False)
+                ax_roll.set_visible(False)
+    
+    # Save plots
+    plt.figure(fig_pitch.number)
+    plt.tight_layout()
+    if interactive:
+        plt.show()
+    else:
+        target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
+        pitch_path = output_base_dir / f"setpoint_tracking_pitch{target_suffix}.png"
+        plt.savefig(pitch_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"Saved pitch tracking analysis: {pitch_path}")
+    
+    plt.figure(fig_roll.number)
+    plt.tight_layout()
+    if interactive:
+        plt.show()
+    else:
+        roll_path = output_base_dir / f"setpoint_tracking_roll{target_suffix}.png"
+        plt.savefig(roll_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"Saved roll tracking analysis: {roll_path}")
 
 

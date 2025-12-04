@@ -840,6 +840,7 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
             impact_total_array = np.array([d['impact_total'] for d in distance_dicts])
             cpa_ground_array = np.array([d['cpa_ground'] for d in distance_dicts])
             cpa_total_array = np.array([d['cpa_total'] for d in distance_dicts])
+            cpa_altitude_array = np.array([d['cpa_alt_diff'] for d in distance_dicts])
             
             print(f"\n{target_name} Target:")
             print(f"  Successful engagements: {len(distance_dicts)}")
@@ -861,6 +862,10 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
                 'cpa_total_std': np.std(cpa_total_array),
                 'cpa_total_min': np.min(cpa_total_array),
                 'cpa_total_max': np.max(cpa_total_array),
+                'cpa_altitude_mean': np.mean(cpa_altitude_array),
+                'cpa_altitude_std': np.std(cpa_altitude_array),
+                'cpa_altitude_min': np.min(cpa_altitude_array),
+                'cpa_altitude_max': np.max(cpa_altitude_array),
                 'distance_dicts': distance_dicts
             })
     
@@ -939,6 +944,9 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
             writer.writerow([stat['target'], stat['count'], 'CPA_Total', 
                            f"{stat['cpa_total_mean']:.1f}", f"{stat['cpa_total_std']:.1f}", 
                            f"{stat['cpa_total_min']:.1f}", f"{stat['cpa_total_max']:.1f}"])
+            writer.writerow([stat['target'], stat['count'], 'CPA_Altitude', 
+                           f"{stat['cpa_altitude_mean']:.1f}", f"{stat['cpa_altitude_std']:.1f}", 
+                           f"{stat['cpa_altitude_min']:.1f}", f"{stat['cpa_altitude_max']:.1f}"])
     
     print(f"Summary statistics saved to: {stats_file}")
     print(f"\nTotal logs processed: {len(log_files)}")
@@ -1176,28 +1184,41 @@ def process_logs_by_dive_angle(base_dir: Path, output_base_dir: Path,
                 import csv
                 with open(stats_file, 'r') as f:
                     reader = csv.DictReader(f)
+                    cpa_data = None
+                    altitude_data = None
                     for row in reader:
                         if row['Metric'] == 'CPA_Total':
-                            # Read successful hits count
-                            hits_file = angle_output_dir / f"successful_hits{target_suffix}.txt"
-                            num_hits = 0
-                            if hits_file.exists():
-                                try:
-                                    with open(hits_file, 'r') as hf:
-                                        num_hits = int(hf.read().strip())
-                                except:
-                                    num_hits = 0
-                            
-                            angle_summary_data.append({
-                                'angle': angle_value,
-                                'count': int(row['Count']),
-                                'mean_cpa': float(row['Mean_m']),
-                                'std_cpa': float(row['StdDev_m']),
-                                'min_cpa': float(row['Min_m']),
-                                'max_cpa': float(row['Max_m']),
-                                'num_hits': num_hits
-                            })
-                            break
+                            cpa_data = row
+                        elif row['Metric'] == 'CPA_Altitude':
+                            altitude_data = row
+                    
+                    if cpa_data:
+                        # Read successful hits count
+                        hits_file = angle_output_dir / f"successful_hits{target_suffix}.txt"
+                        num_hits = 0
+                        if hits_file.exists():
+                            try:
+                                with open(hits_file, 'r') as hf:
+                                    num_hits = int(hf.read().strip())
+                            except:
+                                num_hits = 0
+                        
+                        summary_entry = {
+                            'angle': angle_value,
+                            'count': int(cpa_data['Count']),
+                            'mean_cpa': float(cpa_data['Mean_m']),
+                            'std_cpa': float(cpa_data['StdDev_m']),
+                            'min_cpa': float(cpa_data['Min_m']),
+                            'max_cpa': float(cpa_data['Max_m']),
+                            'num_hits': num_hits
+                        }
+                        
+                        # Add altitude data if available
+                        if altitude_data:
+                            summary_entry['mean_altitude'] = float(altitude_data['Mean_m'])
+                            summary_entry['std_altitude'] = float(altitude_data['StdDev_m'])
+                        
+                        angle_summary_data.append(summary_entry)
             except Exception as e:
                 print(f"Warning: Could not read stats for {angle_value}°: {e}")
     
@@ -1219,6 +1240,10 @@ def process_logs_by_dive_angle(base_dir: Path, output_base_dir: Path,
         # Create CPA miss components plot
         plot_cpa_miss_components(output_base_dir, target_selection, angle_dirs, 
                                 cpa_hit_threshold, time_diff_threshold, interactive_3d)
+        
+        # Create setpoint tracking analysis plots for 10° and 20° cases
+        from tg_plotting import plot_setpoint_tracking_analysis
+        plot_setpoint_tracking_analysis(output_base_dir, target_selection, angle_dirs, interactive_3d)
         
         # Create comprehensive PDF with all histograms and summary plots
         create_comprehensive_pdf(output_base_dir, target_selection, angle_dirs)
