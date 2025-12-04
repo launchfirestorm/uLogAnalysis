@@ -744,15 +744,44 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
                     print(f"    {target_name}: Impact={impact_dist:.1f}m, CPA={cpa_dist:.1f}m (true miss)")
                     all_miss_distances[target_name].append(distances)
                     
+                    # Get timing and distance information for all cases (for debugging)
+                    first_impact_idx = engagement_masks.get('first_impact_idx')
+                    if first_impact_idx is not None:
+                        impact_time = (data["timestamp_us"][first_impact_idx] - data["timestamp_us"][0]) * 1e-6
+                        cpa_time = distances['cpa_time_s']
+                        time_diff = abs(impact_time - cpa_time)
+                        
+                        # Calculate distance differential (impact location distance vs CPA distance)
+                        # Using ground coordinates for comparison
+                        impact_lat = distances['impact_lat']
+                        impact_lon = distances['impact_lon']
+                        cpa_lat = distances['cpa_lat']
+                        cpa_lon = distances['cpa_lon']
+                        
+                        # Calculate distance between impact point and CPA point
+                        import math
+                        def haversine_distance(lat1, lon1, lat2, lon2):
+                            R = 6371000  # Earth's radius in meters
+                            lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
+                            lat2_rad, lon2_rad = math.radians(lat2), math.radians(lon2)
+                            dlat = lat2_rad - lat1_rad
+                            dlon = lon2_rad - lon1_rad
+                            a = (math.sin(dlat/2)**2 + 
+                                 math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2)
+                            c = 2 * math.asin(math.sqrt(a))
+                            return R * c
+                        
+                        cpa_to_impact_distance = haversine_distance(cpa_lat, cpa_lon, impact_lat, impact_lon)
+                        
+                        # Print debug info for all cases
+                        print(f"      [DEBUG] CPA time: {cpa_time:.3f}s, Impact time: {impact_time:.3f}s")
+                        print(f"      [DEBUG] Time differential (Δt): {time_diff:.3f}s")
+                        print(f"      [DEBUG] Distance CPA→Impact: {cpa_to_impact_distance:.2f}m")
+                    
                     # Check if this is a successful hit (CPA < threshold with impact within time_diff_threshold of CPA)
                     if cpa_dist < cpa_hit_threshold:
                         # Get timing information
-                        first_impact_idx = engagement_masks.get('first_impact_idx')
                         if first_impact_idx is not None:
-                            impact_time = (data["timestamp_us"][first_impact_idx] - data["timestamp_us"][0]) * 1e-6
-                            cpa_time = distances['cpa_time_s']
-                            time_diff = abs(impact_time - cpa_time)
-                            
                             if time_diff < time_diff_threshold:  # Impact within threshold of CPA
                                 # Calculate impact angle at impact point
                                 roll = data["roll_deg"][first_impact_idx]
@@ -770,8 +799,13 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
                                 airspeed = data["airspeed"][first_impact_idx]
                                 all_airspeeds.append(airspeed)
                                 
-                                print(f"      Successful HIT! Impact angle: {impact_angle:.1f}° (Δt={time_diff:.3f}s)")
+                                print(f"      ✓ Successful HIT! Impact angle: {impact_angle:.1f}° (Δt={time_diff:.3f}s)")
                                 print(f"      Yaw: {yaw:.1f}°, Airspeed: {airspeed:.1f} m/s")
+                            else:
+                                print(f"      ✗ CPA < {cpa_hit_threshold}m but impact too late (Δt={time_diff:.3f}s > {time_diff_threshold}s threshold)")
+                    else:
+                        if first_impact_idx is not None:
+                            print(f"      ✗ Miss: CPA={cpa_dist:.1f}m > {cpa_hit_threshold}m threshold")
 
                 
                 log_results.append({
@@ -886,6 +920,11 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     
     print(f"\nDetailed results saved to: {results_file} (Target: {target_selection})")
     
+    # Save successful hits count for summary plots
+    hits_file = output_dir / f"successful_hits{target_suffix}.txt"
+    with open(hits_file, 'w') as f:
+        f.write(f"{len(all_impact_angles)}\n")
+    
     # Summary statistics
     stats_file = output_dir / "miss_distance_statistics.csv"
     with open(stats_file, 'w', newline='') as f:
@@ -922,7 +961,7 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     plot_altitude_debug(trajectory_data, output_dir, target_selection, interactive_3d)
     
     # Create miss distance histogram plots
-    plot_miss_distance_histograms(stats_output, output_dir, target_selection, interactive_3d, cpa_hit_threshold, dive_angle)
+    plot_miss_distance_histograms(stats_output, output_dir, target_selection, interactive_3d, cpa_hit_threshold, dive_angle, len(all_impact_angles))
     
     # Create impact angle histogram for successful hits
     if len(all_impact_angles) > 0:
@@ -1102,9 +1141,13 @@ def process_logs_by_dive_angle(base_dir: Path, output_base_dir: Path,
         angle_output_dir = output_base_dir / f"{angle_value}Deg"
         angle_output_dir.mkdir(parents=True, exist_ok=True)
         
+        # Dynamically set pitch threshold based on dive angle (dive_angle - 2)
+        dynamic_pitch_threshold = -(angle_value - 2)  # Negative because pitch is negative in dive
+        print(f"Using dynamic pitch threshold: {dynamic_pitch_threshold}° (dive angle - 2)")
+        
         # Process all logs in this angle directory
         process_multiple_logs(angle_dir, angle_output_dir,
-                            pitch_threshold, accel_threshold, deriv_threshold, alt_threshold,
+                            dynamic_pitch_threshold, accel_threshold, deriv_threshold, alt_threshold,
                             target_selection, interactive_3d, cpa_hit_threshold, angle_value,
                             time_diff_threshold)
         
@@ -1135,13 +1178,24 @@ def process_logs_by_dive_angle(base_dir: Path, output_base_dir: Path,
                     reader = csv.DictReader(f)
                     for row in reader:
                         if row['Metric'] == 'CPA_Total':
+                            # Read successful hits count
+                            hits_file = angle_output_dir / f"successful_hits{target_suffix}.txt"
+                            num_hits = 0
+                            if hits_file.exists():
+                                try:
+                                    with open(hits_file, 'r') as hf:
+                                        num_hits = int(hf.read().strip())
+                                except:
+                                    num_hits = 0
+                            
                             angle_summary_data.append({
                                 'angle': angle_value,
                                 'count': int(row['Count']),
                                 'mean_cpa': float(row['Mean_m']),
                                 'std_cpa': float(row['StdDev_m']),
                                 'min_cpa': float(row['Min_m']),
-                                'max_cpa': float(row['Max_m'])
+                                'max_cpa': float(row['Max_m']),
+                                'num_hits': num_hits
                             })
                             break
             except Exception as e:
@@ -1153,11 +1207,18 @@ def process_logs_by_dive_angle(base_dir: Path, output_base_dir: Path,
         print(f"Creating Summary Plots and Comprehensive Report")
         print(f"{'='*80}")
         
-        from tg_plotting import plot_dive_angle_summary, create_comprehensive_pdf
+        from tg_plotting import plot_dive_angle_summary, plot_impact_locations_topdown, plot_cpa_miss_components, create_comprehensive_pdf
         
         # Create summary plot
         plot_dive_angle_summary(angle_summary_data, output_base_dir, target_selection, 
-                              interactive_3d, cpa_hit_threshold)
+                              interactive_3d, cpa_hit_threshold, time_diff_threshold)
+        
+        # Create top-down impact locations plot
+        plot_impact_locations_topdown(output_base_dir, target_selection, angle_dirs, interactive_3d)
+        
+        # Create CPA miss components plot
+        plot_cpa_miss_components(output_base_dir, target_selection, angle_dirs, 
+                                cpa_hit_threshold, time_diff_threshold, interactive_3d)
         
         # Create comprehensive PDF with all histograms and summary plots
         create_comprehensive_pdf(output_base_dir, target_selection, angle_dirs)

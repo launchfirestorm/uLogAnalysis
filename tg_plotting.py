@@ -991,7 +991,7 @@ def plot_accelerometer_impacts(trajectory_data: list, output_dir: Path,
         plt.close()
 
 
-def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_selection: str, interactive: bool = False, cpa_hit_threshold: float = 3.0, dive_angle: int = None):
+def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_selection: str, interactive: bool = False, cpa_hit_threshold: float = 3.0, dive_angle: int = None, num_successful_hits: int = 0):
     """Create histogram plots for miss distance distributions.
     
     Creates two histogram subplots:
@@ -1003,6 +1003,9 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
         output_dir: Output directory for plots
         target_selection: Target name for filename
         interactive: Whether to show interactive plot
+        cpa_hit_threshold: CPA threshold for hit detection (m)
+        dive_angle: Dive angle for title annotation
+        num_successful_hits: Number of hits that met both CPA and time criteria
     """
     if not matplotlib_available:
         print("matplotlib not available, skipping miss distance histogram plot.")
@@ -1120,8 +1123,8 @@ def plot_miss_distance_histograms(stats_output: list, output_dir: Path, target_s
                     f'{int(count)}',
                     ha='center', va='bottom', fontsize=10, fontweight='bold')
     
-    # Calculate hit rate (CPA < threshold)
-    hits = np.sum(cpa_total_array < cpa_hit_threshold)
+    # Calculate hit rate (successful hits that met both CPA and time criteria)
+    hits = num_successful_hits
     total_cases = len(cpa_total_array)
     hit_rate = (hits / total_cases * 100) if total_cases > 0 else 0
     
@@ -1609,7 +1612,7 @@ def plot_altitude_debug(trajectory_data: list, output_dir: Path,
 
 
 def plot_dive_angle_summary(angle_summary_data: list, output_dir: Path, target_selection: str, 
-                            interactive: bool = False, cpa_hit_threshold: float = 3.0):
+                            interactive: bool = False, cpa_hit_threshold: float = 3.0, time_diff_threshold: float = 0.1):
     """Create summary plots showing hit rate and mean CPA as a function of dive angle.
     
     Args:
@@ -1618,6 +1621,7 @@ def plot_dive_angle_summary(angle_summary_data: list, output_dir: Path, target_s
         target_selection: Target name for filename
         interactive: Whether to show interactive plot
         cpa_hit_threshold: CPA threshold for hit detection (m)
+        time_diff_threshold: Time difference threshold for hit detection (s)
     """
     if not matplotlib_available:
         print("matplotlib not available, skipping dive angle summary plot.")
@@ -1642,45 +1646,17 @@ def plot_dive_angle_summary(angle_summary_data: list, output_dir: Path, target_s
     mean_cpas = [d['mean_cpa'] for d in angle_summary_data]
     std_cpas = [d['std_cpa'] for d in angle_summary_data]
     
-    # Calculate hit rates (engagements with CPA < threshold)
-    # Read individual log results to get hit counts
+    # Calculate hit rates using successful hits (engagements that met both CPA and time criteria)
     hit_rates = []
     for data in angle_summary_data:
-        angle = data['angle']
-        angle_output_dir = output_dir / f"{angle}Deg"
-        target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
-        results_file = angle_output_dir / f"log_analysis_results{target_suffix}.csv"
+        num_hits = data.get('num_hits', 0)
+        total_count = data['count']
         
-        if results_file.exists():
-            try:
-                import csv
-                hit_count = 0
-                total_count = 0
-                with open(results_file, 'r') as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        if row['Status'] == 'Success':
-                            total_count += 1
-                            # Check CPA column
-                            cpa_col = f'{target_selection}_CPA_Total_m'
-                            if cpa_col in row and row[cpa_col]:
-                                try:
-                                    cpa_value = float(row[cpa_col])
-                                    if cpa_value < cpa_hit_threshold:
-                                        hit_count += 1
-                                except ValueError:
-                                    pass
-                
-                if total_count > 0:
-                    hit_rate = (hit_count / total_count) * 100
-                else:
-                    hit_rate = 0
-                hit_rates.append(hit_rate)
-            except Exception as e:
-                print(f"Warning: Could not calculate hit rate for {angle}°: {e}")
-                hit_rates.append(0)
+        if total_count > 0:
+            hit_rate = (num_hits / total_count) * 100
         else:
-            hit_rates.append(0)
+            hit_rate = 0
+        hit_rates.append(hit_rate)
     
     # Create figure with 2 subplots
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
@@ -1699,7 +1675,7 @@ def plot_dive_angle_summary(angle_summary_data: list, output_dir: Path, target_s
     
     ax1.set_xlabel('Dive Angle [degrees]', fontsize=12)
     ax1.set_ylabel('Hit Rate [%]', fontsize=12)
-    ax1.set_title(f'Hit Rate vs Dive Angle (CPA < {cpa_hit_threshold}m)\nTarget: {target_selection}', 
+    ax1.set_title(f'Hit Rate vs Dive Angle (CPA < {cpa_hit_threshold}m & Impact within {time_diff_threshold}s)\nTarget: {target_selection}', 
                  fontsize=13, fontweight='bold')
     ax1.grid(True, alpha=0.3)
     ax1.legend(fontsize=10)
@@ -1742,6 +1718,404 @@ def plot_dive_angle_summary(angle_summary_data: list, output_dir: Path, target_s
         print(f"Saved dive angle summary plot: {plot_path}")
 
 
+def plot_impact_locations_topdown(output_base_dir: Path, target_selection: str, angle_dirs: list, 
+                                   interactive: bool = False):
+    """Create top-down scatter plot of impact locations relative to target for each dive angle.
+    
+    Args:
+        output_base_dir: Base output directory containing angle subdirectories
+        target_selection: Target name
+        angle_dirs: List of tuples (angle_value, angle_dir_path)
+        interactive: Whether to show interactive plot
+    """
+    if not matplotlib_available:
+        print("matplotlib not available, skipping impact location plot.")
+        return
+        
+    try:
+        from matplotlib import pyplot as plt
+        from matplotlib.patches import Circle
+    except ImportError:
+        print("matplotlib not available, skipping impact location plot.")
+        return
+    
+    # Define target location
+    all_targets = {
+        'Container': {'lat': 43.2222722, 'lon': -75.3903593},
+        'Van': {'lat': 43.2221788, 'lon': -75.3905151}
+    }
+    target_info = all_targets[target_selection]
+    target_lat = target_info['lat']
+    target_lon = target_info['lon']
+    
+    # Helper function to convert lat/lon to meters from target
+    def latlon_to_meters(lat, lon, target_lat, target_lon):
+        """Convert lat/lon to x,y meters relative to target using local approximation."""
+        # Approximate meters per degree at this latitude
+        lat_to_m = 111132.92  # meters per degree latitude
+        lon_to_m = 111132.92 * np.cos(np.radians(target_lat))  # meters per degree longitude
+        
+        x = (lon - target_lon) * lon_to_m
+        y = (lat - target_lat) * lat_to_m
+        return x, y
+    
+    # Collect data for each dive angle
+    angle_data = []
+    for angle_value, _ in angle_dirs:
+        angle_output_dir = output_base_dir / f"{angle_value}Deg"
+        target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
+        results_file = angle_output_dir / f"log_analysis_results{target_suffix}.csv"
+        hits_file = angle_output_dir / f"successful_hits{target_suffix}.txt"
+        
+        if not results_file.exists():
+            continue
+        
+        # Read successful hits count (files that met both CPA and time criteria)
+        num_successful_hits = 0
+        if hits_file.exists():
+            try:
+                with open(hits_file, 'r') as f:
+                    num_successful_hits = int(f.read().strip())
+            except:
+                num_successful_hits = 0
+        
+        # Read impact locations from CSV
+        impact_x = []
+        impact_y = []
+        cpa_distances = []
+        filenames = []
+        
+        try:
+            import csv
+            with open(results_file, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row['Status'] == 'Success' and row.get('Impact_Lat') and row.get('Impact_Lon'):
+                        try:
+                            impact_lat = float(row['Impact_Lat'])
+                            impact_lon = float(row['Impact_Lon'])
+                            x, y = latlon_to_meters(impact_lat, impact_lon, target_lat, target_lon)
+                            impact_x.append(x)
+                            impact_y.append(y)
+                            filenames.append(row.get('File', ''))
+                            
+                            # Get CPA distance if available
+                            cpa_col = f'{target_selection}_CPA_Total_m'
+                            if cpa_col in row and row[cpa_col]:
+                                cpa_distances.append(float(row[cpa_col]))
+                            else:
+                                cpa_distances.append(float('inf'))
+                        except (ValueError, KeyError):
+                            pass
+            
+            # Classify hits: the N files with smallest CPA distances are hits (where N = num_successful_hits)
+            is_hit = []
+            if len(cpa_distances) > 0:
+                # Get indices sorted by CPA distance
+                sorted_indices = np.argsort(cpa_distances)
+                hit_indices = set(sorted_indices[:num_successful_hits])
+                is_hit = [i in hit_indices for i in range(len(cpa_distances))]
+            else:
+                is_hit = []
+            
+            if impact_x:
+                angle_data.append({
+                    'angle': angle_value,
+                    'x': np.array(impact_x),
+                    'y': np.array(impact_y),
+                    'cpa': np.array(cpa_distances),
+                    'filenames': filenames,
+                    'is_hit': is_hit
+                })
+        except Exception as e:
+            print(f"Warning: Could not read impact locations for {angle_value}°: {e}")
+    
+    if not angle_data:
+        print("No impact location data found for plotting.")
+        return
+    
+    # Create subplots - arrange in grid
+    n_angles = len(angle_data)
+    n_cols = min(3, n_angles)
+    n_rows = int(np.ceil(n_angles / n_cols))
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6*n_cols, 6*n_rows))
+    if n_angles == 1:
+        axes = np.array([axes])
+    axes = axes.flatten()
+    
+    # Plot each dive angle
+    for idx, data in enumerate(angle_data):
+        ax = axes[idx]
+        angle = data['angle']
+        x = data['x']
+        y = data['y']
+        cpa = data['cpa']
+        filenames = data['filenames']
+        hits = data['is_hit']
+        
+        # Draw target rectangle (5m tall x 2m wide, centered at origin)
+        from matplotlib.patches import Rectangle
+        target_rect = Rectangle((-1, -2.5), 2, 5, fill=True, facecolor='red', 
+                               edgecolor='darkred', linewidth=2, alpha=0.3, 
+                               label='Target (2m×5m)', zorder=6)
+        ax.add_patch(target_rect)
+        
+        # Plot target center at origin
+        ax.plot(0, 0, 'r*', markersize=15, zorder=10)
+        
+        # Draw circles for hit thresholds
+        circle_2m = Circle((0, 0), 2, fill=False, edgecolor='green', linewidth=2, 
+                          linestyle='--', label='2m (Hit)', zorder=5)
+        circle_3m = Circle((0, 0), 3, fill=False, edgecolor='orange', linewidth=2, 
+                          linestyle='--', label='3m (Weak Hit)', zorder=5)
+        ax.add_patch(circle_2m)
+        ax.add_patch(circle_3m)
+        
+        # Color code impacts by hit classification (based on CPA and time criteria)
+        colors = ['green' if h else 'red' for h in hits]
+        
+        # Plot impacts
+        ax.scatter(x, y, c=colors, s=100, alpha=0.7, edgecolors='black', linewidths=1, zorder=8)
+        
+        # Set equal aspect and limits
+        ax.set_aspect('equal', adjustable='box')
+        max_range = max(10, np.max(np.abs([x, y])) * 1.2) if len(x) > 0 else 10
+        ax.set_xlim(-max_range, max_range)
+        ax.set_ylim(-max_range, max_range)
+        
+        # Add grid and labels
+        ax.grid(True, alpha=0.3)
+        ax.axhline(0, color='gray', linewidth=0.5, alpha=0.5)
+        ax.axvline(0, color='gray', linewidth=0.5, alpha=0.5)
+        ax.set_xlabel('East-West Distance from Target [m]', fontsize=10)
+        ax.set_ylabel('North-South Distance from Target [m]', fontsize=10)
+        ax.set_title(f'Dive Angle: {angle}° (n={len(x)})', fontsize=12, fontweight='bold')
+        ax.legend(loc='upper right', fontsize=9)
+    
+    # Hide unused subplots
+    for idx in range(n_angles, len(axes)):
+        axes[idx].set_visible(False)
+    
+    plt.suptitle(f'Impact Locations (Top-Down View) - Target: {target_selection}', 
+                fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    
+    if interactive:
+        plt.show()
+    else:
+        target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
+        plot_path = output_base_dir / f"impact_locations_topdown{target_suffix}.png"
+        plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"Saved impact locations top-down plot: {plot_path}")
+
+
+def plot_cpa_miss_components(output_base_dir: Path, target_selection: str, angle_dirs: list, 
+                             cpa_hit_threshold: float = 3.0, time_diff_threshold: float = 0.1,
+                             interactive: bool = False):
+    """Create scatter plot of CPA miss distance broken into horizontal and altitude components.
+    
+    Args:
+        output_base_dir: Base output directory containing angle subdirectories
+        target_selection: Target name
+        angle_dirs: List of tuples (angle_value, angle_dir_path)
+        cpa_hit_threshold: CPA threshold for hit classification
+        time_diff_threshold: Time threshold for hit classification
+        interactive: Whether to show interactive plot
+    """
+    if not matplotlib_available:
+        print("matplotlib not available, skipping CPA components plot.")
+        return
+        
+    try:
+        from matplotlib import pyplot as plt
+        from matplotlib.patches import Rectangle
+    except ImportError:
+        print("matplotlib not available, skipping CPA components plot.")
+        return
+    
+    # Define target location and dimensions
+    all_targets = {
+        'Container': {'lat': 43.2222722, 'lon': -75.3903593, 'alt_agl': 2.0},
+        'Van': {'lat': 43.2221788, 'lon': -75.3905151, 'alt_agl': 1.0}
+    }
+    target_info = all_targets[target_selection]
+    target_lat = target_info['lat']
+    target_lon = target_info['lon']
+    target_alt = target_info['alt_agl']
+    
+    # Helper function to convert lat/lon to meters from target
+    def haversine_distance(lat1, lon1, lat2, lon2):
+        """Calculate ground distance in meters."""
+        import math
+        R = 6371000  # Earth's radius in meters
+        lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
+        lat2_rad, lon2_rad = math.radians(lat2), math.radians(lon2)
+        dlat = lat2_rad - lat1_rad
+        dlon = lon2_rad - lon1_rad
+        a = (math.sin(dlat/2)**2 + 
+             math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2)
+        c = 2 * math.asin(math.sqrt(a))
+        return R * c
+    
+    # Collect data for each dive angle
+    angle_data = []
+    for angle_value, _ in angle_dirs:
+        angle_output_dir = output_base_dir / f"{angle_value}Deg"
+        target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
+        results_file = angle_output_dir / f"log_analysis_results{target_suffix}.csv"
+        hits_file = angle_output_dir / f"successful_hits{target_suffix}.txt"
+        
+        if not results_file.exists():
+            continue
+        
+        # Read successful hits count (files that met both CPA and time criteria)
+        num_successful_hits = 0
+        if hits_file.exists():
+            try:
+                with open(hits_file, 'r') as f:
+                    num_successful_hits = int(f.read().strip())
+            except:
+                num_successful_hits = 0
+        
+        # Read CPA locations from CSV
+        horizontal_distances = []
+        altitude_differences = []
+        cpa_total_distances = []
+        
+        try:
+            import csv
+            with open(results_file, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row['Status'] == 'Success' and row.get('CPA_Lat') and row.get('CPA_Lon'):
+                        try:
+                            cpa_lat = float(row['CPA_Lat'])
+                            cpa_lon = float(row['CPA_Lon'])
+                            cpa_alt_agl = float(row['CPA_Alt_AGL_m'])
+                            
+                            # Calculate horizontal distance at CPA
+                            horiz_dist = haversine_distance(cpa_lat, cpa_lon, target_lat, target_lon)
+                            
+                            # Calculate altitude difference at CPA
+                            alt_diff = cpa_alt_agl - target_alt
+                            
+                            horizontal_distances.append(horiz_dist)
+                            altitude_differences.append(alt_diff)
+                            
+                            # Store CPA total distance for sorting
+                            cpa_col = f'{target_selection}_CPA_Total_m'
+                            if cpa_col in row and row[cpa_col]:
+                                cpa_total_distances.append(float(row[cpa_col]))
+                            else:
+                                cpa_total_distances.append(float('inf'))
+                        except (ValueError, KeyError):
+                            pass
+            
+            # Classify hits: the N files with smallest CPA distances are hits (where N = num_successful_hits)
+            # These are the files that met both CPA < threshold AND time < threshold
+            is_hit = []
+            if len(cpa_total_distances) > 0:
+                # Get indices sorted by CPA distance
+                sorted_indices = np.argsort(cpa_total_distances)
+                hit_indices = set(sorted_indices[:num_successful_hits])
+                is_hit = [i in hit_indices for i in range(len(cpa_total_distances))]
+            else:
+                is_hit = []
+            
+            if horizontal_distances:
+                angle_data.append({
+                    'angle': angle_value,
+                    'horizontal': np.array(horizontal_distances),
+                    'altitude': np.array(altitude_differences),
+                    'is_hit': np.array(is_hit)
+                })
+        except Exception as e:
+            print(f"Warning: Could not read CPA components for {angle_value}°: {e}")
+    
+    if not angle_data:
+        print("No CPA component data found for plotting.")
+        return
+    
+    # Create subplots - arrange in grid
+    n_angles = len(angle_data)
+    n_cols = min(3, n_angles)
+    n_rows = int(np.ceil(n_angles / n_cols))
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6*n_cols, 6*n_rows))
+    if n_angles == 1:
+        axes = np.array([axes])
+    axes = axes.flatten()
+    
+    # Plot each dive angle
+    for idx, data in enumerate(angle_data):
+        ax = axes[idx]
+        angle = data['angle']
+        horiz = data['horizontal']
+        alt = data['altitude']
+        hits = data['is_hit']
+        
+        # Draw target rectangle (5m wide horizontally, 2m tall vertically)
+        # Centered at 1m altitude (Van target altitude)
+        target_center_alt = 1.0  # Target altitude for Van
+        target_rect = Rectangle((-2.5, target_center_alt - 1), 5, 2, fill=True, facecolor='blue', 
+                               edgecolor='darkblue', linewidth=2, alpha=0.3, 
+                               label='Target (5m×2m)', zorder=6)
+        ax.add_patch(target_rect)
+        
+        # Plot target center at (0, 1m altitude)
+        ax.plot(0, target_center_alt, 'b*', markersize=15, zorder=10)
+        
+        # Color code by hit classification
+        colors = ['green' if h else 'red' for h in hits]
+        
+        # Plot CPA miss components
+        ax.scatter(horiz, alt, c=colors, s=100, alpha=0.7, edgecolors='black', linewidths=1, zorder=8)
+        
+        # Add reference lines at target center
+        ax.axhline(target_center_alt, color='gray', linewidth=0.5, alpha=0.5)
+        ax.axvline(0, color='gray', linewidth=0.5, alpha=0.5)
+        
+        # Set limits with some padding
+        max_horiz = max(10, np.max(np.abs(horiz)) * 1.2) if len(horiz) > 0 else 10
+        max_alt = max(10, np.max(np.abs(alt)) * 1.2) if len(alt) > 0 else 10
+        ax.set_xlim(-2, max_horiz)
+        ax.set_ylim(-max_alt, max_alt)
+        
+        # Add grid and labels
+        ax.grid(True, alpha=0.3)
+        ax.set_xlabel('Horizontal Miss Distance at CPA [m]', fontsize=10)
+        ax.set_ylabel('Altitude Miss Distance at CPA [m]', fontsize=10)
+        ax.set_title(f'Dive Angle: {angle}° (n={len(horiz)})', fontsize=12, fontweight='bold')
+        
+        # Add legend
+        from matplotlib.patches import Patch
+        legend_elements = [
+            target_rect,
+            Patch(facecolor='green', edgecolor='black', label=f'Hit (CPA<{cpa_hit_threshold}m)'),
+            Patch(facecolor='red', edgecolor='black', label='Miss')
+        ]
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=9)
+    
+    # Hide unused subplots
+    for idx in range(n_angles, len(axes)):
+        axes[idx].set_visible(False)
+    
+    plt.suptitle(f'CPA Miss Components (Horizontal vs Altitude) - Target: {target_selection}', 
+                fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    
+    if interactive:
+        plt.show()
+    else:
+        target_suffix = f"_{target_selection.replace(' ', '_').lower()}"
+        plot_path = output_base_dir / f"cpa_miss_components{target_suffix}.png"
+        plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"Saved CPA miss components plot: {plot_path}")
+
+
 def create_comprehensive_pdf(output_base_dir: Path, target_selection: str, angle_dirs: list):
     """Create a comprehensive PDF report with summary plots and all histogram plots.
     
@@ -1766,6 +2140,16 @@ def create_comprehensive_pdf(output_base_dir: Path, target_selection: str, angle
     summary_plot = output_base_dir / f"dive_angle_summary{target_suffix}.png"
     if summary_plot.exists():
         plot_files.append(summary_plot)
+    
+    # Add impact locations top-down plot
+    topdown_plot = output_base_dir / f"impact_locations_topdown{target_suffix}.png"
+    if topdown_plot.exists():
+        plot_files.append(topdown_plot)
+    
+    # Add CPA miss components plot
+    components_plot = output_base_dir / f"cpa_miss_components{target_suffix}.png"
+    if components_plot.exists():
+        plot_files.append(components_plot)
     
     # Add histogram plots for each dive angle
     for angle_value, _ in sorted(angle_dirs, key=lambda x: x[0]):
