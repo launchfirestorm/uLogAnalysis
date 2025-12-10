@@ -20,7 +20,8 @@ from tg_plotting import (
     plot_accelerometer_impacts,
     plot_miss_distance_histograms,
     plot_impact_angle_histogram,
-    plot_altitude_debug
+    plot_altitude_debug,
+    plot_pitch_debug
 )
 from tg_utils import (
     quaternion_to_euler as quaternion_to_euler, 
@@ -532,7 +533,8 @@ def calculate_miss_distances(ulog, data: Dict[str, np.ndarray], mask: np.ndarray
     # Define target locations (hardcoded) - altitudes are AGL (ground level)
     all_targets = {
         'Container': {'lat': 43.2222722, 'lon': -75.3903593, 'alt_agl': 2.0},
-        'Van': {'lat': 43.2221788, 'lon': -75.3905151, 'alt_agl': 1.0}
+        'Van': {'lat': 43.2221788, 'lon': -75.3905151, 'alt_agl': 1.0},
+        'Conex': {'lat': 33.7578867, 'lon': -115.3099750, 'alt_agl': 2.583}  # 33°45.4732'N 115°18.5985'W, 8'6" = 2.583m
     }
     
     # Filter targets based on selection
@@ -968,6 +970,9 @@ def process_multiple_logs(logs_dir: Path, output_dir: Path,
     # Create altitude debug plot to visualize dive and impact detection
     plot_altitude_debug(trajectory_data, output_dir, target_selection, interactive_3d)
     
+    # Create pitch debug plot to visualize pitch trajectories with dive and impact detection
+    plot_pitch_debug(trajectory_data, output_dir, target_selection, pitch_threshold, interactive_3d)
+    
     # Create miss distance histogram plots
     plot_miss_distance_histograms(stats_output, output_dir, target_selection, interactive_3d, cpa_hit_threshold, dive_angle, len(all_impact_angles))
     
@@ -1150,7 +1155,7 @@ def process_logs_by_dive_angle(base_dir: Path, output_base_dir: Path,
         angle_output_dir.mkdir(parents=True, exist_ok=True)
         
         # Dynamically set pitch threshold based on dive angle (dive_angle - 2)
-        dynamic_pitch_threshold = -(angle_value - 2)  # Negative because pitch is negative in dive
+        dynamic_pitch_threshold = -(angle_value - 4)  # Negative because pitch is negative in dive
         print(f"Using dynamic pitch threshold: {dynamic_pitch_threshold}° (dive angle - 2)")
         
         # Process all logs in this angle directory
@@ -1265,7 +1270,7 @@ def main():
     parser.add_argument("--save-csv", action="store_true", help="Always save filtered CSV alongside plots")
     parser.add_argument("--debug", action="store_true", help="Print debug information about available ULog datasets and fields")
     parser.add_argument("--interactive-3d", action="store_true", help="Show interactive 3D plots that can be rotated and zoomed (requires display)")
-    parser.add_argument("--target", choices=["Container", "Van"], required=True, help="Target selection: 'Container' or 'Van' (required)")
+    parser.add_argument("--target", choices=["Container", "Van", "Conex"], required=True, help="Target selection: 'Container', 'Van', or 'Conex' (required)")
     parser.add_argument("--by-dive-angle", action="store_true", help="Process logs grouped by dive angle subdirectories (e.g., 10Deg, 15Deg, etc.)")
     parser.add_argument("--cpa-hit-threshold", type=float, default=3.0, help="CPA threshold for successful hit detection (m). Default 3.0")
     parser.add_argument("--time-diff-threshold", type=float, default=0.1, help="Time difference threshold between CPA and impact for hit detection (s). Default 0.1")
